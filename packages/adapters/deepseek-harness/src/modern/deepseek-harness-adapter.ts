@@ -43,6 +43,7 @@ import {
 } from "./configuration.js";
 import { ModernControlStore, ModernControlStoreError } from "./control-store.js";
 import { ModernEventGateway, ModernEventGatewayError } from "./event-gateway.js";
+import { clearInheritedForkInbox, pendingForkInboxIds } from "./fork-inbox.js";
 import {
   matchesModernForkHistory,
   ModernHistoryError,
@@ -58,6 +59,12 @@ import {
   type ModernJournalRemote,
 } from "./journal.js";
 import { loadModernPermissionModeCatalog, ModernPermissionModeError } from "./permission-modes.js";
+import {
+  deepSeekModernProfile,
+  type DeepSeekModernVersion,
+  isDeepSeekV015,
+  type DeepSeekModernProfile,
+} from "../profiles/profile.js";
 import {
   ModernRemoteConnection,
   ModernRemoteConnectionError,
@@ -90,7 +97,16 @@ interface ModernForkExpectation extends ParsedModernForkInput {
   readonly exactSeedLength?: number;
 }
 
+type ModernRollbackPlan =
+  | {
+      readonly kind: "fork";
+      readonly input: ParsedModernForkInput;
+      readonly agentPreset: string;
+    }
+  | { readonly kind: "create"; readonly agentPreset: string };
+
 export interface ModernDeepSeekHarnessAdapterOptions extends ModernRemoteConnectionOptions {
+  readonly version?: DeepSeekModernVersion;
   readonly toolOutputLimit?: number;
   readonly maxEvents?: number;
   readonly maxHistoryBytes?: number;
@@ -111,6 +127,7 @@ export interface ModernConnectionLike extends ModernJournalRemote {
   connect(): Promise<void>;
   onFault(listener: (error: ModernRemoteConnectionError) => void): () => void;
   openWebUi?(): Promise<void>;
+  flushSession(sessionId: string, signal?: AbortSignal): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -135,6 +152,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
   });
   readonly webUi?: HarnessWebUiAction;
   readonly #connection: ModernConnectionLike;
+  readonly #profile: DeepSeekModernProfile;
   readonly #control: ModernControlStore;
   readonly #events: ModernEventGateway;
   readonly #dependencies: ModernDeepSeekHarnessAdapterDependencies;
@@ -163,8 +181,11 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     dependencies: Partial<ModernDeepSeekHarnessAdapterDependencies> = {},
   ) {
     this.#options = options;
+    this.#profile = deepSeekModernProfile(options.version ?? "0.1.2-rc.1");
     this.#dependencies = { ...DEFAULT_DEPENDENCIES, ...dependencies };
-    this.#connection = this.#dependencies.createConnection(options);
+    const connectionOptions = { ...options };
+    delete connectionOptions.version;
+    this.#connection = this.#dependencies.createConnection(connectionOptions);
     if (options.openWebUi && this.#connection.openWebUi) {
       this.webUi = Object.freeze({
         open: () => this.#track(this.#openWebUi()),
@@ -269,12 +290,18 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     let forkExpectation: ModernForkExpectation | undefined;
     try {
       const cwd = path.resolve(input.cwd);
-      const forkInput = input.kind === "fork" ? parseModernForkInput(input) : undefined;
+      let forkInput =
+        input.kind === "fork" ? parseModernForkInput(input, this.#profile) : undefined;
+      const rollbackSourceSessionId =
+        input.kind === "rollbackLastTurn"
+          ? modernSessionId(input.sourceRef, "roll back", this.#profile)
+          : undefined;
+      let rollbackPlan: ModernRollbackPlan | undefined;
       let sessionId =
         input.kind === "create"
           ? `session-${this.#dependencies.randomUUID()}`
           : input.kind === "resume"
-            ? resumeSessionId(input)
+            ? modernSessionId(input.nativeRef, "resume", this.#profile)
             : undefined;
       if (sessionId) {
         if (this.#sessionIds.has(sessionId)) {
@@ -308,6 +335,26 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       }
       this.#assertAccepting();
 
+      if (rollbackSourceSessionId) {
+        rollbackPlan = await this.#resolveLastTurnRollback(rollbackSourceSessionId, cwd);
+        if (rollbackPlan.kind === "fork") {
+          forkInput = rollbackPlan.input;
+        } else {
+          sessionId = `session-${this.#dependencies.randomUUID()}`;
+          if (sessionId === rollbackSourceSessionId || this.#sessionIds.has(sessionId)) {
+            throw new AdapterOperationError({
+              code: "sessionBusy",
+              message: "DeepSeek Harness Session is already loaded",
+              retryable: true,
+            });
+          }
+          this.#sessionIds.add(sessionId);
+          reservedSessionId = sessionId;
+          detachControl = this.#control.attach(sessionId);
+        }
+        this.#assertAccepting();
+      }
+
       if (forkInput) {
         forkExpectation = await this.#forkSession(forkInput, cwd);
         sessionId = forkExpectation.childSessionId;
@@ -321,8 +368,12 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       }
       if (!sessionId) throw new Error("unreachable Session open mode");
 
-      if (input.kind === "create") {
-        await this.#createSession(sessionId, cwd);
+      if (input.kind === "create" || rollbackPlan?.kind === "create") {
+        await this.#createSession(
+          sessionId,
+          cwd,
+          rollbackPlan?.kind === "create" ? rollbackPlan.agentPreset : undefined,
+        );
         this.#assertAccepting();
         if (createConfiguration?.model) {
           await selectModernModel(
@@ -346,6 +397,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
             permissionModes,
             createConfiguration.permissionModeId,
             this.#lifetime.signal,
+            this.#profile,
           );
           this.#assertAccepting();
         }
@@ -357,7 +409,45 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         this.#journalOptions(),
       );
       this.#assertAccepting();
-      if (forkExpectation) await this.#verifyForkJournal(forkExpectation, journal, cwd);
+      if (forkExpectation) {
+        await this.#verifyForkJournal(forkExpectation, journal, cwd);
+        if (
+          isDeepSeekV015(this.#profile) &&
+          (await clearInheritedForkInbox(this.#connection, journal, this.#lifetime.signal))
+        ) {
+          await journal.close();
+          journal = await openModernJournal(
+            this.#connection,
+            { sessionId, cwd },
+            this.#journalOptions(),
+          );
+          await this.#verifyForkJournal(forkExpectation, journal, cwd);
+          if (pendingForkInboxIds(journal).length !== 0) throw forkProtocolError();
+          await this.#connection.flushSession(sessionId, this.#lifetime.signal);
+        }
+      }
+      if (rollbackPlan) {
+        if (currentModernAgentPreset(journal) !== rollbackPlan.agentPreset) {
+          throw rollbackProtocolError();
+        }
+        if (rollbackPlan.kind === "create") {
+          const replacement = projectModernHistory({
+            harnessId: this.harnessId,
+            sessionId,
+            events: journal.events,
+            profile: this.#profile,
+            ...(this.#options.toolOutputLimit === undefined
+              ? {}
+              : { toolOutputLimit: this.#options.toolOutputLimit }),
+            ...(this.#options.maxEvents === undefined
+              ? {}
+              : { maxEvents: this.#options.maxEvents }),
+          });
+          if (replacement.incompleteTurn || replacement.snapshot.turns.length !== 0) {
+            throw rollbackProtocolError();
+          }
+        }
+      }
       this.#control.seed(sessionId, journal.projections);
       this.#assertAccepting();
       const openedConfiguration = readModernConfigurationSnapshot({
@@ -367,6 +457,9 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
           harnessId: this.harnessId,
           nativeSessionId: sessionId,
           formatVersion: 1,
+          ...(isDeepSeekV015(this.#profile)
+            ? { locator: { dshVersion: this.#profile.version } }
+            : {}),
         }),
         modelCatalog: catalog,
         permissionModes,
@@ -388,6 +481,9 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         modelCatalog: catalog,
         permissionModes,
         sessionId,
+        ...(isDeepSeekV015(this.#profile)
+          ? { flushSession: () => this.#connection.flushSession(sessionId) }
+          : {}),
         randomUUID: this.#dependencies.randomUUID,
         now: this.#dependencies.now,
         ...(this.#options.toolOutputLimit === undefined
@@ -454,22 +550,86 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     }
   }
 
-  async #createSession(requestedSessionId: string, cwd: string): Promise<void> {
+  async #createSession(
+    requestedSessionId: string,
+    cwd: string,
+    agentPreset?: string,
+  ): Promise<void> {
     const result = await this.#connection.call<unknown>("session/create", {
-      request: { sessionId: requestedSessionId, cwd },
+      request: {
+        sessionId: requestedSessionId,
+        cwd,
+        ...(agentPreset === undefined ? {} : { agentPreset }),
+      },
     });
     if (!result.ok) throw new AdapterOperationError(remoteFailure("session/create", result.error));
     if (
       !isRecord(result.value) ||
       !hasExactOptionalKeys(result.value, ["sessionId"], ["agentPreset"]) ||
       result.value.sessionId !== requestedSessionId ||
-      (Object.hasOwn(result.value, "agentPreset") && typeof result.value.agentPreset !== "string")
+      (Object.hasOwn(result.value, "agentPreset") &&
+        typeof result.value.agentPreset !== "string") ||
+      (agentPreset !== undefined && result.value.agentPreset !== agentPreset)
     ) {
       throw new AdapterOperationError({
         code: "protocolError",
         message: "DeepSeek Harness session/create returned an invalid Session identity",
         retryable: false,
       });
+    }
+  }
+
+  async #resolveLastTurnRollback(
+    sourceSessionId: string,
+    cwd: string,
+  ): Promise<ModernRollbackPlan> {
+    const source = await openModernJournal(
+      this.#connection,
+      { sessionId: sourceSessionId, cwd },
+      this.#journalOptions(),
+    );
+    try {
+      const projected = projectModernHistory({
+        harnessId: this.harnessId,
+        sessionId: sourceSessionId,
+        events: source.events,
+        profile: this.#profile,
+        ...(this.#options.toolOutputLimit === undefined
+          ? {}
+          : { toolOutputLimit: this.#options.toolOutputLimit }),
+        ...(this.#options.maxEvents === undefined ? {} : { maxEvents: this.#options.maxEvents }),
+      });
+      if (projected.incompleteTurn) {
+        throw new AdapterOperationError({
+          code: "sessionBusy",
+          message: "DeepSeek Harness Native Session has an active Turn",
+          retryable: true,
+        });
+      }
+      if (projected.snapshot.turns.length === 0) {
+        throw new AdapterOperationError({
+          code: "invalidState",
+          message: "DeepSeek Harness Native Session has no Turn to roll back",
+          retryable: false,
+        });
+      }
+      const agentPreset = currentModernAgentPreset(source);
+      const retained = projected.snapshot.turns.at(-2);
+      if (retained) {
+        const checkpointId = retained.checkpoint?.checkpointId;
+        if (!checkpointId) throw forkCheckpointError();
+        return {
+          kind: "fork",
+          input: { sourceSessionId, checkpointId },
+          agentPreset,
+        };
+      }
+      return {
+        kind: "create",
+        agentPreset,
+      };
+    } finally {
+      await source.close();
     }
   }
 
@@ -486,12 +646,13 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     let minimumSeedLength: number;
     let exactSeedLength: number | undefined;
     try {
-      const boundary = resolveModernForkBoundary(source.events, input.checkpointId);
+      const boundary = resolveModernForkBoundary(source.events, input.checkpointId, this.#profile);
       if (!boundary) throw forkCheckpointError();
       const projected = projectModernHistory({
         harnessId: this.harnessId,
         sessionId: input.sourceSessionId,
         events: boundary.events,
+        profile: this.#profile,
         ...(this.#options.toolOutputLimit === undefined
           ? {}
           : { toolOutputLimit: this.#options.toolOutputLimit }),
@@ -542,7 +703,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     child: ModernJournal,
     cwd: string,
   ): Promise<void> {
-    const seedLength = child.header.seedLength;
+    const seedLength = child.inheritedEventCount;
     if (
       child.header.parentSession !== expected.sourceSessionId ||
       child.header.cwd !== cwd ||
@@ -564,7 +725,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     try {
       if (source.events.length < seedLength) throw forkProtocolError();
       const inherited = source.events.slice(0, seedLength);
-      const boundary = resolveModernForkBoundary(inherited, expected.checkpointId);
+      const boundary = resolveModernForkBoundary(inherited, expected.checkpointId, this.#profile);
       if (!boundary || boundary.atSeq !== expected.atSeq || boundary.events.length !== seedLength) {
         throw forkProtocolError();
       }
@@ -572,6 +733,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         harnessId: this.harnessId,
         sessionId: expected.sourceSessionId,
         events: inherited,
+        profile: this.#profile,
         ...(this.#options.toolOutputLimit === undefined
           ? {}
           : { toolOutputLimit: this.#options.toolOutputLimit }),
@@ -581,6 +743,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         harnessId: this.harnessId,
         sessionId: expected.childSessionId,
         events: child.events,
+        profile: this.#profile,
         ...(this.#options.toolOutputLimit === undefined
           ? {}
           : { toolOutputLimit: this.#options.toolOutputLimit }),
@@ -591,7 +754,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         expectedProjection.incompleteTurn !== undefined ||
         expectedProjection.snapshot.turns.at(-1)?.checkpoint?.checkpointId !==
           expected.checkpointId ||
-        !matchesModernForkHistory(inherited, child.events) ||
+        !matchesModernForkHistory(inherited, child.events, this.#profile) ||
         childProjection.incompleteTurn !== undefined ||
         turns.length !== expectedProjection.snapshot.turns.length ||
         turns.at(-1)?.checkpoint?.checkpointId !== expected.checkpointId ||
@@ -610,6 +773,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
 
   #journalOptions(): ModernJournalOptions {
     return {
+      profile: this.#profile,
       ...(this.#options.maxEvents === undefined ? {} : { maxEvents: this.#options.maxEvents }),
       ...(this.#options.maxHistoryBytes === undefined
         ? {}
@@ -743,13 +907,15 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       if (failure) session.fault(failure);
       return session.close();
     });
-    await Promise.allSettled(sessionClosures);
+    const sessionResults = await Promise.allSettled(sessionClosures);
     await this.#events.close().catch(() => undefined);
     await this.#control.close().catch(() => undefined);
     const connectionClose = this.#connection.close();
     const [connectionResult] = await Promise.allSettled([connectionClose]);
     await Promise.allSettled([...this.#inflight, this.#eventRecovery]);
     if (connectionResult.status === "rejected") throw connectionResult.reason;
+    const sessionFailure = sessionResults.find((result) => result.status === "rejected");
+    if (sessionFailure?.status === "rejected") throw sessionFailure.reason;
   }
 }
 
@@ -768,8 +934,13 @@ function validateOpen(input: OpenSessionInput): HarnessError | undefined {
       retryable: false,
     };
   }
-  if (input.kind !== "create" && input.kind !== "resume" && input.kind !== "fork") {
-    return unsupported(`DeepSeek Harness Modern does not support '${input.kind}'`);
+  const kind: unknown = input.kind;
+  if (kind !== "create" && kind !== "resume" && kind !== "fork" && kind !== "rollbackLastTurn") {
+    return {
+      code: "unsupported",
+      message: `DeepSeek Harness Modern does not support '${String(kind)}'`,
+      retryable: false,
+    };
   }
   if (
     input.kind === "create" &&
@@ -880,16 +1051,20 @@ function delegationPermissionIsApplied(events: readonly ModernJournalEvent[]): b
   );
 }
 
-function resumeSessionId(input: Extract<OpenSessionInput, { kind: "resume" }>): string {
-  const parsed = nativeSessionRefSchema.safeParse(input.nativeRef);
+function modernSessionId(
+  ref: unknown,
+  operation: "resume" | "roll back",
+  profile: DeepSeekModernProfile,
+): string {
+  const parsed = nativeSessionRefSchema.safeParse(ref);
   if (
     !parsed.success ||
     parsed.data.harnessId !== DEEPSEEK_HARNESS_ID ||
-    parsed.data.locator !== undefined
+    !sessionLocatorMatches(parsed.data.locator, profile)
   ) {
     throw new AdapterOperationError({
       code: "invalidRequest",
-      message: "DeepSeek Harness cannot resume this Native Session Ref",
+      message: `DeepSeek Harness cannot ${operation} this Native Session Ref`,
       retryable: false,
     });
   }
@@ -898,6 +1073,7 @@ function resumeSessionId(input: Extract<OpenSessionInput, { kind: "resume" }>): 
 
 function parseModernForkInput(
   input: Extract<OpenSessionInput, { kind: "fork" }>,
+  profile: DeepSeekModernProfile,
 ): ParsedModernForkInput {
   const source = nativeSessionRefSchema.safeParse(input.sourceRef);
   const checkpoint = nativeCheckpointRefSchema.safeParse(input.checkpoint);
@@ -906,8 +1082,8 @@ function parseModernForkInput(
     !checkpoint.success ||
     source.data.harnessId !== DEEPSEEK_HARNESS_ID ||
     checkpoint.data.harnessId !== DEEPSEEK_HARNESS_ID ||
-    source.data.locator !== undefined ||
-    checkpoint.data.locator !== undefined ||
+    !sessionLocatorMatches(source.data.locator, profile) ||
+    !checkpointLocatorMatches(checkpoint.data.locator, profile) ||
     checkpoint.data.nativeSessionId !== source.data.nativeSessionId
   ) {
     throw new AdapterOperationError({
@@ -920,6 +1096,23 @@ function parseModernForkInput(
     sourceSessionId: source.data.nativeSessionId,
     checkpointId: checkpoint.data.checkpointId,
   };
+}
+
+function sessionLocatorMatches(locator: unknown, profile: DeepSeekModernProfile): boolean {
+  if (locator === undefined) return true;
+  return isDeepSeekV015(profile) && profileLocatorMatches(locator, profile);
+}
+
+function checkpointLocatorMatches(locator: unknown, profile: DeepSeekModernProfile): boolean {
+  return isDeepSeekV015(profile) ? profileLocatorMatches(locator, profile) : locator === undefined;
+}
+
+function profileLocatorMatches(locator: unknown, profile: DeepSeekModernProfile): boolean {
+  return (
+    isRecord(locator) &&
+    Reflect.ownKeys(locator).length === 1 &&
+    locator.dshVersion === profile.version
+  );
 }
 
 function forkCheckpointError(): AdapterOperationError {
@@ -936,6 +1129,22 @@ function forkProtocolError(): AdapterOperationError {
     message: "DeepSeek Harness Fork did not reproduce the requested Native history prefix",
     retryable: false,
   });
+}
+
+function rollbackProtocolError(): AdapterOperationError {
+  return new AdapterOperationError({
+    code: "protocolError",
+    message: "DeepSeek Harness last-Turn rollback did not create the expected replacement Session",
+    retryable: false,
+  });
+}
+
+function currentModernAgentPreset(journal: ModernJournal): string {
+  const agentPreset = journal.projections.values.agentPreset;
+  if (typeof agentPreset !== "string" || agentPreset.trim() === "") {
+    throw rollbackProtocolError();
+  }
+  return agentPreset;
 }
 
 function forkRemoteFailure(failure: ModernRemoteFailure): HarnessError {
@@ -973,10 +1182,6 @@ function forkRemoteFailure(failure: ModernRemoteFailure): HarnessError {
     ...nativeFailure(knownCode, "DeepSeek Harness Fork failed"),
     retryable: false,
   };
-}
-
-function unsupported(message: string): HarnessError {
-  return { code: "unsupported", message, retryable: false };
 }
 
 function remoteFailure(endpoint: string, failure: ModernRemoteFailure): HarnessError {

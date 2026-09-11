@@ -8,13 +8,13 @@
 
 七个既有 Adapter 通过同样的 `manifest.json` 和 `createHarnessAdapter` 工厂加载；`adapter-composition.ts` 已删除，Host 源码、包依赖和 TypeScript references 不再直接引用具体 Adapter 包。预装集合仅由发行清单 [`scripts/release/harness-plugins.json`](../scripts/release/harness-plugins.json) 决定。原生构造参数、预取和 Claude Code 的直接/Broker 选择仍由相应插件负责。
 
-本地会话导入已使用公共 `sessionImport` 契约、Host 映射事务与动态设置页；Pi 和 DSH Modern 是两个实际实现。完整原生引用只在 Adapter 与 Host 间流转，详见[会话导入](harness-session-import.md)。这不代表普通 Agent Picker 已完成动态接入。
+本地会话导入已使用公共 `sessionImport` 契约、Host 映射事务与动态设置页；Pi 和 DSH 是两个实际实现。DSH 仅支持精确 `0.1.2-rc.1` / `0.1.5-rc.1` 的托管 Web，Legacy 协议已移除。完整原生引用只在 Adapter 与 Host 间流转，详见[会话导入](harness-session-import.md)。这不代表普通 Agent Picker 已完成动态接入。
 
 尚未实现的目标包括：
 
 - Renderer Picker、图标、Composer 状态、偏好及 Sidebar 全部改由目标 Host 目录驱动。目前只提供经过校验、按连接发送的 Renderer 目录查询客户端，**新插件不会自动出现在现有 Picker 中**。
 - 删除 Renderer 等公共层的剩余 Harness 静态名单、旧路由和按名称区分的恢复策略。Host 的 Adapter 静态 import 和注册名单已移除。
-- 正式 Credits 接口、远程/Broker Session Import 接入、插件拥有的旧数据迁移。
+- 会话 Credits 旧 duck-typed 路径的统一迁移、远程/Broker Session Import 接入、插件拥有的旧数据迁移。设置页已有公共只读账号额度接口（见下文），不代表所有 Credits 路径已迁移。
 - 插件独立发布/升级/依赖安装机制，以及 Broker、远程配置和委派周边的完整去专属化。现有 npm/Installer 发行已携带独立插件 Bundle 和应用资源预装目录；Broker 协议和 CLI 入口仍保留现有 Claude Code 语义。
 - 原生 Harness、历史版本、协议代际、远程执行及安装产物的完整行为验收。
 
@@ -140,6 +140,16 @@ Renderer 的 `listHarnessPlugins()` 使用绑定的 RequestManager 发送此固�
 
 此前缀下的非法数据直接报错，不回落到官方 Codex。有效但未安装的插件路由同样不会交给官方 app-server。普通官方模型路由不受影响。既有七种专用编码暂时保留，后续迁移不得直接删除历史读取能力。
 
+### 只读账号额度
+
+可选 `HarnessAdapter.inspectAccount()` 主动返回当前原生认证的 `HarnessAccountSnapshot`，无真实额度时返回 `null`；不得把会话花费当成账号额度、返回旧认证缓存或为查询发起模型 Turn。原生 SDK、认证和额度解析属于插件；实现负责限制查询耗时及关闭检查资源。该可选扩展兼容未实现能力的插件。
+
+`codexhost/harness/accounts/list` 接受空对象参数，聚合当前连接已加载插件的公开快照及 Manifest 名称。Host 校验快照并隔离失败和超时，不透传原生错误或凭据；未实现、无数据或返回非法快照的插件不产生账号行。Renderer 在账号设置页只读展示，不注册 Codex 账号或参与多账号路由。Claude Code 的 Aqua Broker 转发 `adapter.inspectAccount`；旧 Broker 不支持时无数据。产品说明见[账号设置](codex-accounts.md)。
+
+## 运行中调整方向
+
+外部 Thread 的「调整方向」使用公共 `turn.cancel` → 等待旧轮终态 → `turn.start`，不要求插件新增 steer 命令。Host 负责替换协调，Renderer 复用正常发送展示；官方 Codex Thread 保留原生 steer。执行、版本化绑定、输入限制和验证边界见[外部 Thread 调整方向](external-thread-steering.md)。
+
 ## 构建、发行与远程路径
 
 `npm run build:typescript` 在 TypeScript 编译后执行 `npm run build:plugins`，按发行清单生成 Host 的相邻插件目录。`npm start` 沿用这个构建路径；`--no-build` 需要之前已生成插件产物。根目录普通发行构建包含预装插件，核心 Host 自身则不依赖这些 Adapter 包。
@@ -147,6 +157,8 @@ Renderer 的 `listHarnessPlugins()` 使用绑定的 RequestManager 发送此固�
 [`build-plugin.mjs`](../packages/harness-adapter/scripts/build-plugin.mjs) 将每个插件入口及其经审查的 JavaScript 运行依赖分别打成 `plugin.mjs`，并复制 Manifest 和图标；不打包原生 Harness 可执行文件或登录态。[`harness-plugins.mjs`](../scripts/release/harness-plugins.mjs) 负责发行集合编排、文件清单与启用配置。构建输出是可重建的产物目录，不应指向用户插件目录。
 
 Host release Bundle 不再包含 Adapter 或 Harness SDK；Bundle 审计拒绝它们重新泄漏进核心。npm 和 Installer 的文件白名单包含每个插件的入口、Manifest、图标及根目录启用文件，现有第三方许可声明继续随发行版交付。
+
+DeepSeek 插件通过自身的 HTTP/WebSocket 实现连接受支持的本机 DSH，不打包 DSH CLI。Legacy 专用的 `@deepseek-ai/dsh-apiproxy`、`@deepseek-ai/dsh-session` SDK 及其打包项已移除；Modern 仍使用的 `schemastery` 随插件构建保留。V0/V3 profile 和 Assistant 流解析属于插件，不进入 Host 或 Renderer。
 
 普通 Host、Remote Control 和 SSH listener 的每个连接都从该连接实际使用的 Runtime 旁查找插件。SSH 安装继续引用远端包中的 Host Runtime，不需要回退本机目录。手动复制 Runtime 时必须同时携带相邻 `plugins/`；仅复制 `host-runtime.mjs` 将得到没有预装 Harness 的核心，而不是隐式加载本机源码。macOS Aqua Broker 也经同一个 Loader 只创建其需要的插件，并使用直接模式和冷实例，避免递归创建 Broker 客户端。
 

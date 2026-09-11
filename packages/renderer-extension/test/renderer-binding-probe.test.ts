@@ -4,8 +4,10 @@ import {
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
+  decodeHarnessPluginRoute,
 } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
+import { modelSelectionForAgent } from "../src/versioned-renderer-adapter.js";
 
 import {
   applyComposerModelWrite,
@@ -22,6 +24,8 @@ import {
   refreshConnectionHosts,
   restoredThreadOwnership,
   retryableHarnessAvailabilityAgents,
+  resolveCodexAccountSelection,
+  shouldRefreshCodexAccountsForAdapterState,
   rendererUsageRefreshDelay,
   shouldApplyDraftAgentCarrier,
   shouldPersistNewThreadConfigurationSelection,
@@ -50,6 +54,68 @@ import {
 } from "../src/renderer-usage-control.js";
 
 describe("Renderer connection diagnostics", () => {
+  it.each(["kiro-cli", "codebuddy"] as const)(
+    "round trips %s effort without reviving a choice cleared by the native model",
+    (agent) => {
+      const model = harnessModelRefSchema.parse({ id: "adjustable" });
+      const high = harnessThinkingOptionIdSchema.parse("high");
+      const selection = modelSelectionForAgent(null, "medium", agent, model, high);
+      if (!selection || typeof selection.model !== "string")
+        throw new Error("Missing Kiro carrier");
+      expect(decodeHarnessPluginRoute(selection.model)).toMatchObject({
+        harnessId: agent,
+        model,
+        thinkingOptionId: high,
+      });
+      const inspection = {
+        owner: "external" as const,
+        harnessId: agent,
+        transportModelId: selection.model,
+        locked: true as const,
+        effectiveModel: model,
+        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+      };
+      expect(
+        restoredThreadOwnership({
+          ...inspection,
+          effectiveThinkingOptionId: high,
+          availableThinkingOptions: [{ id: high, label: "High" }],
+        }).thinkingOptionId,
+      ).toBe(high);
+      expect(
+        restoredThreadOwnership({
+          ...inspection,
+          effectiveModel: harnessModelRefSchema.parse({ id: "fixed-paid" }),
+          availableThinkingOptions: [],
+        }).thinkingOptionId,
+      ).toBeUndefined();
+      expect(restoredThreadOwnership(inspection).thinkingOptionId).toBe(high);
+    },
+  );
+
+  it("adopts a newly active Codex Account unless the draft has an explicit override", () => {
+    const accounts = [
+      { accountId: "old", label: "Old", codexHome: "/old", active: false, isDefault: true },
+      { accountId: "new", label: "New", codexHome: "/new", active: true, isDefault: false },
+    ];
+    expect(resolveCodexAccountSelection(accounts, null)).toEqual({
+      activeAccountId: "new",
+      overrideAccountId: null,
+      selectedAccountId: "new",
+    });
+    expect(resolveCodexAccountSelection(accounts, "old")).toEqual({
+      activeAccountId: "new",
+      overrideAccountId: "old",
+      selectedAccountId: "old",
+    });
+  });
+
+  it("retries the Codex Account list when the request adapter becomes ready", () => {
+    expect(shouldRefreshCodexAccountsForAdapterState("installing")).toBe(false);
+    expect(shouldRefreshCodexAccountsForAdapterState("unsupported")).toBe(false);
+    expect(shouldRefreshCodexAccountsForAdapterState("ready")).toBe(true);
+  });
+
   it("waits for every Host refresh before completing", async () => {
     let resolveLocal!: () => void;
     let resolveRemote!: () => void;
@@ -110,6 +176,9 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          "kiro-cli": undefined,
+          codebuddy: undefined,
+          "cursor-cli": undefined,
         },
       ),
     ).toEqual([]);
@@ -137,6 +206,9 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          "kiro-cli": undefined,
+          codebuddy: undefined,
+          "cursor-cli": undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -164,6 +236,9 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          "kiro-cli": undefined,
+          codebuddy: undefined,
+          "cursor-cli": undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -189,6 +264,9 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          "kiro-cli": undefined,
+          codebuddy: undefined,
+          "cursor-cli": undefined,
         },
       ),
     ).toEqual(["pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp", "antigravity"]);
@@ -216,6 +294,9 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          "kiro-cli": undefined,
+          codebuddy: undefined,
+          "cursor-cli": undefined,
         },
       ),
     ).toEqual([]);
@@ -243,6 +324,9 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          "kiro-cli": undefined,
+          codebuddy: undefined,
+          "cursor-cli": undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -262,6 +346,9 @@ describe("Renderer Composer DOM behavior", () => {
     expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("ready", "ready", false)).toBe(true);
     expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("error", "ready", true)).toBe(true);
     expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("ready", "error", true)).toBe(true);
+    expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("ready", "ready", true, true)).toBe(
+      true,
+    );
   });
 
   it("retries external Usage after an early empty inspection", () => {

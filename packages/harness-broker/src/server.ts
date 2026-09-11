@@ -11,6 +11,11 @@ import type {
   OpenSessionInput,
 } from "@codexhost/harness-adapter";
 
+import {
+  harnessAccountListParamsSchema,
+  harnessAccountSnapshotSchema,
+  harnessPluginIdSchema,
+} from "@codexhost/shared-contracts";
 import { consumeBrokerFrames, writeBrokerFrame } from "./framing.js";
 import {
   HARNESS_BROKER_MAX_PENDING_REQUESTS,
@@ -38,6 +43,7 @@ interface ServerSession {
   generation: number;
   owner: string;
   cwd: string;
+  environment?: OpenSessionInput["environment"];
   nativeId?: string;
   nativeRef?: HarnessSession["initialState"]["nativeRef"];
   writerKey?: string;
@@ -221,9 +227,7 @@ export async function startHarnessBrokerServer(input: {
   generation?: string;
   token?: string;
 }): Promise<HarnessBrokerServer> {
-  if (input.adapter.harnessId !== "claude-code") {
-    throw new Error("Harness broker accepts only the claude-code adapter");
-  }
+  harnessPluginIdSchema.parse(input.adapter.harnessId);
   if (
     process.platform !== "win32" &&
     path.dirname(input.descriptorPath) !== path.dirname(input.socketPath)
@@ -242,7 +246,7 @@ export async function startHarnessBrokerServer(input: {
   const descriptor: HarnessBrokerDescriptorV1 = {
     schemaVersion: 1,
     protocolVersion: HARNESS_BROKER_PROTOCOL_VERSION,
-    harnessId: "claude-code",
+    harnessId: input.adapter.harnessId,
     generation,
     ownerPid: process.pid,
     socketPath: input.socketPath,
@@ -315,12 +319,14 @@ export async function startHarnessBrokerServer(input: {
             const observedNativeId = state.nativeRef?.nativeSessionId;
             if (
               state.nativeRef &&
-              record.nativeRef &&
-              (record.nativeRef.harnessId !== state.nativeRef.harnessId ||
-                record.nativeRef.nativeSessionId !== state.nativeRef.nativeSessionId ||
-                record.nativeRef.formatVersion !== state.nativeRef.formatVersion)
+              (state.nativeRef.harnessId !== input.adapter.harnessId ||
+                (record.nativeRef &&
+                  (record.nativeRef.harnessId !== state.nativeRef.harnessId ||
+                    record.nativeRef.nativeSessionId !== state.nativeRef.nativeSessionId ||
+                    record.nativeRef.formatVersion !== state.nativeRef.formatVersion)))
             ) {
               record.faulted = true;
+              releaseProvisionalWriter(record);
               await send({
                 kind: "output",
                 sessionId: record.id,
@@ -331,7 +337,7 @@ export async function startHarnessBrokerServer(input: {
                     type: "session.faulted",
                     error: {
                       code: "protocolError",
-                      message: "Native Claude Session identity changed after open",
+                      message: "Native Harness Session identity changed after open",
                       retryable: false,
                       stage: "harnessBroker.identity",
                     },
@@ -357,7 +363,7 @@ export async function startHarnessBrokerServer(input: {
                       type: "session.faulted",
                       error: {
                         code: "sessionBusy",
-                        message: "Native Claude Session already has an active writer",
+                        message: "Native Harness Session already has an active writer",
                         retryable: true,
                         stage: "harnessBroker.identity",
                       },
@@ -441,6 +447,12 @@ export async function startHarnessBrokerServer(input: {
 
     const handleRequest = async (request: HarnessBrokerRequest): Promise<unknown> => {
       if (closed || state.closed) throw new Error("Harness broker connection is closed");
+      if (request.method === "adapter.inspectAccount") {
+        harnessAccountListParamsSchema.parse(request.params);
+        return harnessAccountSnapshotSchema
+          .nullable()
+          .parse((await input.adapter.inspectAccount?.()) ?? null);
+      }
       if (request.method === "adapter.inspect") {
         const parsed = brokerInspectInputSchema.parse(request.params);
         return input.adapter.inspect({
@@ -451,8 +463,11 @@ export async function startHarnessBrokerServer(input: {
       if (request.method === "adapter.subagent.readSnapshot") {
         const subagents = input.adapter.subagents;
         if (!subagents)
-          return { ok: false, error: harnessError("Claude subagents are unavailable", false) };
-        return subagents.readSnapshot(subagentReadSnapshotSchema.parse(request.params));
+          return { ok: false, error: harnessError("Harness subagents are unavailable", false) };
+        const params = subagentReadSnapshotSchema.parse(request.params);
+        if (params.parent.harnessId !== input.adapter.harnessId)
+          return { ok: false, error: protocolError("Subagent parent belongs to another Harness") };
+        return subagents.readSnapshot(params);
       }
       if (request.method === "adapter.open") {
         const openInput = brokerOpenInputSchema.parse(request.params) as OpenSessionInput;
@@ -463,13 +478,15 @@ export async function startHarnessBrokerServer(input: {
               ? openInput.nativeRef
               : openInput.sourceRef;
         const sourceNativeId = sourceRef?.nativeSessionId;
+        if (sourceRef && sourceRef.harnessId !== input.adapter.harnessId)
+          return { ok: false, error: protocolError("Native Session belongs to another Harness") };
         const sourceKey = sourceNativeId ? nativeWriterKey(sourceNativeId) : undefined;
         if (sourceKey && nativeWriters.has(sourceKey)) {
           return {
             ok: false,
             error: {
               code: "sessionBusy",
-              message: "Native Claude Session already has an active writer",
+              message: "Native Harness Session already has an active writer",
               retryable: true,
               stage: "harnessBroker.open",
             },
@@ -480,7 +497,7 @@ export async function startHarnessBrokerServer(input: {
             ok: false,
             error: {
               code: "sessionBusy",
-              message: "Native Claude Session identity claim is already pending",
+              message: "Native Harness Session identity claim is already pending",
               retryable: true,
               stage: "harnessBroker.open",
             },
@@ -512,6 +529,14 @@ export async function startHarnessBrokerServer(input: {
           return { ok: false, error: harnessError("Harness broker connection closed") };
         }
         const openedRef = opened.value.initialState.nativeRef;
+        if (openedRef && openedRef.harnessId !== input.adapter.harnessId) {
+          releaseOpenReservations();
+          await opened.value.close().catch(() => undefined);
+          return {
+            ok: false,
+            error: protocolError("Adapter opened a Session for another Harness"),
+          };
+        }
         if (
           sourceRef &&
           (!openedRef ||
@@ -526,7 +551,7 @@ export async function startHarnessBrokerServer(input: {
             ok: false,
             error: {
               code: "protocolError",
-              message: "Native Claude Session identity did not match the requested open",
+              message: "Native Harness Session identity did not match the requested open",
               retryable: false,
               stage: "harnessBroker.open",
             },
@@ -542,7 +567,7 @@ export async function startHarnessBrokerServer(input: {
             ok: false,
             error: {
               code: "sessionBusy",
-              message: "Native Claude Session already has an active writer",
+              message: "Native Harness Session already has an active writer",
               retryable: true,
               stage: "harnessBroker.open",
             },
@@ -554,6 +579,7 @@ export async function startHarnessBrokerServer(input: {
           generation: 1,
           owner: state.id,
           cwd: openInput.cwd,
+          ...(openInput.environment ? { environment: openInput.environment } : {}),
           ...(nativeId ? { nativeId } : {}),
           ...(opened.value.initialState.nativeRef
             ? { nativeRef: opened.value.initialState.nativeRef }
@@ -612,7 +638,7 @@ export async function startHarnessBrokerServer(input: {
               ok: false,
               error: {
                 code: "sessionBusy",
-                message: "Native Claude Session identity has not been claimed yet",
+                message: "Native Harness Session identity has not been claimed yet",
                 retryable: true,
                 stage: "harnessBroker.identity",
               },
@@ -697,7 +723,7 @@ export async function startHarnessBrokerServer(input: {
             ok: false,
             error: {
               code: "sessionBusy",
-              message: "Faulted Claude Session has no authoritative native identity",
+              message: "Faulted Harness Session has no authoritative native identity",
               retryable: false,
               stage: "harnessBroker.reopen",
             },
@@ -709,7 +735,12 @@ export async function startHarnessBrokerServer(input: {
         record.forwarderEpoch += 1;
         await oldSession.close().catch(() => undefined);
         await oldOutputTask.catch(() => undefined);
-        const reopened = await input.adapter.open({ kind: "resume", cwd: record.cwd, nativeRef });
+        const reopened = await input.adapter.open({
+          kind: "resume",
+          cwd: record.cwd,
+          nativeRef,
+          ...(record.environment ? { environment: record.environment } : {}),
+        });
         if (!reopened.ok) return reopened;
         const reopenedRef = reopened.value.initialState.nativeRef;
         if (
@@ -723,7 +754,7 @@ export async function startHarnessBrokerServer(input: {
             ok: false,
             error: {
               code: "protocolError",
-              message: "Claude Aqua broker reopen changed the native Session identity",
+              message: "Aqua Harness broker reopen changed the native Session identity",
               retryable: false,
               stage: "harnessBroker.reopen",
             },

@@ -26,6 +26,9 @@
   <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a>
   <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a>
   <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="imgs/badge-agy.svg" /></a>
+  <a href="https://kiro.dev/docs/cli/"><img alt="Kiro CLI" src="imgs/badge-kiro.svg" /></a>
+  <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="imgs/badge-codebuddy.svg" /></a>
+  <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="imgs/badge-cursor.svg" /></a>
 </p>
 
 <p align="center">
@@ -117,6 +120,7 @@ Codex Desktop을 완전히 종료한 뒤, 새 터미널을 열고 codexhost를 �
   <tr>
     <td colspan="2" valign="top">
       <img src="imgs/grok-usage-limits.png" alt="5시간 및 7일 기간의 남은 한도와 초기화 시간">
+      <p>macOS 메뉴 막대 아이콘 및 Windows 작업 표시줄 아이콘에는 남은 한도 비율이 표시되며, 5시간 창을 우선 사용하고 없으면 7일 창으로 대체합니다.</p>
     </td>
   </tr>
   <tr>
@@ -131,23 +135,21 @@ Codex Desktop을 완전히 종료한 뒤, 새 터미널을 열고 codexhost를 �
 
 ## 기능 상태
 
-| 기능 | <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/badge-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="imgs/badge-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="imgs/badge-agy.svg" /></a> |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 스트리밍 응답 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 도구 상태 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Edit Diff | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| 질문 / 취소 | 기본 제공 | ✅ | — / ✅ | ✅ | ✅ | ✅ | ✅ | — / ✅ |
-| Model / Thinking 선택 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 도구 승인 | 기본 제공 | ✅ | — | ✅ | ✅ | ✅ | ✅ | — |
-| 권한 모드 | 기본 제공 | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Agent 간 작업 협업 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Usage | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Fork | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| 컨텍스트 압축 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| 슬래시 명령 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| 이전 메시지 수정 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
-
-> **Antigravity 현재 상태:** 연동은 아직 보완 중이며, 작업 디렉터리는 현재 `~/.gemini/antigravity-cli/scratch`로 고정되어 있습니다.
+| 기능 | <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/badge-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="imgs/badge-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="imgs/badge-agy.svg" /></a> | <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="imgs/badge-codebuddy.svg" /></a> | <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="imgs/badge-cursor.svg" /></a> |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 스트리밍 응답 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 도구 상태 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Edit Diff | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 질문 / 취소 | 기본 제공 | ✅ | — / ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Model / Thinking 선택 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ / — |
+| 도구 승인 | 기본 제공 | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 권한 모드 | 기본 제공 | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Agent 간 작업 협업 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
+| Usage | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| Fork | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
+| 컨텍스트 압축 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | — |
+| 슬래시 명령 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
+| 이전 메시지 수정 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
 
 ## Agent 간 협업
 
@@ -161,7 +163,7 @@ Codex Desktop을 완전히 종료한 뒤, 새 터미널을 열고 codexhost를 �
 >
 > `opencode`에게 독립 Thread에서 이 수정을 검증하고 관련 테스트를 실행하도록 요청하세요.
 
-CodexHost는 대상 Harness를 위한 별도의 Native Session을 만듭니다. 위임된 Session은 Codex Desktop의 대화 목록에 표시되며, 언제든 열어서 진행 상황을 확인하거나 대화를 이어갈 수 있습니다.
+codexhost는 대상 Harness를 위한 별도의 Native Session을 만듭니다. 위임된 Session은 Codex Desktop의 대화 목록에 표시되며, 언제든 열어서 진행 상황을 확인하거나 대화를 이어갈 수 있습니다.
 
 <details>
 <summary><h3 id="원격-harness">원격 Harness</h3></summary>

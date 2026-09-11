@@ -24,6 +24,7 @@ import {
   type CreateProvisionalThreadInput,
   type DelegationStatus,
   type FindRecentDelegationInput,
+  type RebindSubagentSessionInput,
   type ReplaceReadySessionAfterLastTurnInput,
   type ReplaceReadySessionInput,
   type StoredDelegationRecordV1,
@@ -241,7 +242,7 @@ export class MappingStore {
     ]);
     await this.#acquireLock();
     try {
-      await this.#cleanupTemps();
+      await this.#cleanupResidue();
       const names = (await readdir(this.#threadsDirectory)).filter((name) =>
         name.endsWith(".json"),
       );
@@ -475,6 +476,52 @@ export class MappingStore {
       nativeSessionRef: input.nativeSessionRef,
       turnMappings: this.#mergeMappings(current.turnMappings, input.turnMappings ?? []),
     }));
+  }
+
+  // Keep native ref, Turn mappings and the indexed create request in one serialized
+  // record mutation; separate setters could leave a child pointing at mixed Sessions.
+  async rebindSubagentSession(input: RebindSubagentSessionInput): Promise<StoredThreadRecordV1> {
+    return this.#update(input.hostThreadId, (current) => {
+      const parent = this.#records.get(input.parentHostThreadId);
+      if (
+        current.state !== "ready" ||
+        !current.nativeSessionRef ||
+        current.subagent?.parentHostThreadId !== input.parentHostThreadId ||
+        parent?.state !== "ready" ||
+        parent.harnessId !== current.harnessId ||
+        input.previousNativeSessionRef.harnessId !== current.harnessId ||
+        input.nativeSessionRef.harnessId !== current.harnessId ||
+        !sameJson(parent.nativeSessionRef, input.nativeSessionRef)
+      )
+        throw new MappingStoreError(
+          "MAPPING_CONFLICT",
+          "Subagent replacement must belong to its current parent Session",
+        );
+      if (
+        sameJson(current.nativeSessionRef, input.nativeSessionRef) &&
+        current.createRequestId === input.createRequestId
+      )
+        return null;
+      if (!sameJson(current.nativeSessionRef, input.previousNativeSessionRef)) {
+        throw new MappingStoreError(
+          "MAPPING_CONFLICT",
+          "Subagent replacement source Session is stale",
+        );
+      }
+      const nativeSessionId = input.nativeSessionRef.nativeSessionId;
+      return {
+        ...current,
+        createRequestId: input.createRequestId,
+        nativeSessionRef: input.nativeSessionRef,
+        turnMappings: current.turnMappings.map((mapping) => ({
+          ...mapping,
+          nativeTurnRef: { ...mapping.nativeTurnRef, nativeSessionId },
+          ...(mapping.nativeCheckpointRef
+            ? { nativeCheckpointRef: { ...mapping.nativeCheckpointRef, nativeSessionId } }
+            : {}),
+        })),
+      };
+    });
   }
 
   async replaceReadySession(input: ReplaceReadySessionInput): Promise<StoredThreadRecordV1> {
@@ -788,10 +835,11 @@ export class MappingStore {
     return parsed.data as StoredThreadRecordV1;
   }
 
-  async #cleanupTemps(): Promise<void> {
-    const [threadNames, delegationNames] = await Promise.all([
+  async #cleanupResidue(): Promise<void> {
+    const [threadNames, delegationNames, rootNames] = await Promise.all([
       readdir(this.#threadsDirectory),
       readdir(this.#delegationsDirectory),
+      readdir(this.#directory),
     ]);
     await Promise.all([
       ...threadNames
@@ -800,6 +848,10 @@ export class MappingStore {
       ...delegationNames
         .filter((name) => name.includes(".tmp-"))
         .map((name) => rm(path.join(this.#delegationsDirectory, name), { force: true })),
+      // Renamed aside by #acquireLock; nothing reads them back, and they accumulate one per run.
+      ...rootNames
+        .filter((name) => name.startsWith(`${path.basename(this.#lockPath)}.stale-`))
+        .map((name) => rm(path.join(this.#directory, name), { force: true })),
     ]);
   }
 
