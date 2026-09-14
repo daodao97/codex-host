@@ -10,14 +10,18 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  CODEX_ACCOUNT_ACTIVATE_METHOD,
-  CODEX_ACCOUNT_CREATE_METHOD,
+  CODEX_ACCOUNT_CHANGED_METHOD,
   CODEX_ACCOUNT_DELETE_METHOD,
   CODEX_ACCOUNT_LIST_METHOD,
   CODEX_ACCOUNT_REFRESH_METHOD,
   CODEX_ACCOUNT_LOGIN_CANCEL_METHOD,
   CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD,
   CODEX_ACCOUNT_LOGIN_START_METHOD,
+  CODEX_ACCOUNT_LOGOUT_METHOD,
+  CODEX_ACCOUNT_RECOVER_METHOD,
+  CODEX_ACCOUNT_SWITCH_METHOD,
+  HARNESS_ACCOUNT_INSPECT_METHOD,
+  HARNESS_ACCOUNT_SOURCES_METHOD,
   HARNESS_INSPECT_METHOD,
   HARNESS_PLUGIN_LIST_METHOD,
   HARNESS_WEB_UI_OPEN_METHOD,
@@ -78,6 +82,8 @@ describe("Renderer fixed Model request client", () => {
       accountId: "account-b",
       usage: { planFiveHourUsedPercent: 83 },
       accountCredits: { usedPercent: 83, periodType: "five_hour" },
+      freshness: "cached" as const,
+      observedAt: "2026-09-11T00:00:00.000Z",
     };
     const sendRequest = vi.fn().mockResolvedValue(result);
     const client = createRendererModelClient([{ sendRequest }]);
@@ -90,28 +96,42 @@ describe("Renderer fixed Model request client", () => {
   });
 
   it("validates Account controls and relays device-login completion", async () => {
-    let notify: ((notification: unknown) => void) | undefined;
+    const notifications = new Map<string, (notification: unknown) => void>();
     const remove = vi.fn();
     const addNotificationCallback = vi.fn(
-      (_method: string | readonly string[], callback: (notification: unknown) => void) => {
-        notify = callback;
+      (method: string | readonly string[], callback: (notification: unknown) => void) => {
+        if (typeof method === "string") notifications.set(method, callback);
         return remove;
       },
     );
     const account = {
       accountId: "work",
       label: "Work",
-      codexHome: "/tmp/codex-work",
-      active: true,
-      isDefault: false,
+    };
+    const snapshot = {
+      version: 2 as const,
+      currentAccountId: "work",
+      phase: "ready" as const,
+      revision: 4,
+      instanceId: "host-a",
+      capabilities: {
+        manage: true,
+        switch: true,
+        login: true,
+        delete: true,
+        logout: true,
+        recover: true,
+      },
+      accounts: [account],
     };
     const sendRequest = vi
       .fn<(method: string, params: unknown) => Promise<unknown>>()
-      .mockResolvedValueOnce({ accounts: [account] })
-      .mockResolvedValueOnce({ accounts: [account] })
-      .mockResolvedValueOnce({ account })
+      .mockResolvedValueOnce(snapshot)
+      .mockResolvedValueOnce(snapshot)
       .mockResolvedValueOnce({ deletedAccountId: "work" })
-      .mockResolvedValueOnce({ account })
+      .mockResolvedValueOnce({ currentAccountId: "work", phase: "ready", revision: 5 })
+      .mockResolvedValueOnce({ currentAccountId: null, phase: "ready", revision: 6 })
+      .mockResolvedValueOnce({ ...snapshot, revision: 7 })
       .mockResolvedValueOnce({
         accountId: "work",
         loginId: "login-1",
@@ -122,13 +142,16 @@ describe("Renderer fixed Model request client", () => {
     const client = createRendererModelClient([{ addNotificationCallback, sendRequest }]);
     if (!client) throw new Error("Synthetic Account client was not created");
 
-    await expect(client.listCodexAccounts()).resolves.toEqual({ accounts: [account] });
-    await expect(client.refreshCodexAccounts?.()).resolves.toEqual({ accounts: [account] });
-    await expect(client.createCodexAccount({ label: "Work" })).resolves.toEqual({ account });
+    await expect(client.listCodexAccounts()).resolves.toEqual(snapshot);
+    await expect(client.refreshCodexAccounts?.()).resolves.toEqual(snapshot);
     await expect(client.deleteCodexAccount({ accountId: "work" })).resolves.toEqual({
       deletedAccountId: "work",
     });
-    await expect(client.activateCodexAccount({ accountId: "work" })).resolves.toEqual({ account });
+    await expect(client.switchCodexAccount({ accountId: "work" })).resolves.toMatchObject({
+      currentAccountId: "work",
+    });
+    await expect(client.logoutCodexAccount()).resolves.toMatchObject({ currentAccountId: null });
+    await expect(client.recoverCodexAccounts()).resolves.toMatchObject({ revision: 7 });
     await expect(client.startCodexAccountLogin({ accountId: "work" })).resolves.toMatchObject({
       loginId: "login-1",
       userCode: "ABCD-EFGH",
@@ -139,9 +162,10 @@ describe("Renderer fixed Model request client", () => {
     expect(sendRequest.mock.calls).toEqual([
       [CODEX_ACCOUNT_LIST_METHOD, {}],
       [CODEX_ACCOUNT_REFRESH_METHOD, {}],
-      [CODEX_ACCOUNT_CREATE_METHOD, { label: "Work" }],
       [CODEX_ACCOUNT_DELETE_METHOD, { accountId: "work" }],
-      [CODEX_ACCOUNT_ACTIVATE_METHOD, { accountId: "work" }],
+      [CODEX_ACCOUNT_SWITCH_METHOD, { accountId: "work" }],
+      [CODEX_ACCOUNT_LOGOUT_METHOD, {}],
+      [CODEX_ACCOUNT_RECOVER_METHOD, {}],
       [CODEX_ACCOUNT_LOGIN_START_METHOD, { accountId: "work" }],
       [CODEX_ACCOUNT_LOGIN_CANCEL_METHOD, { loginId: "login-1" }],
     ]);
@@ -152,7 +176,7 @@ describe("Renderer fixed Model request client", () => {
       CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD,
       expect.any(Function),
     );
-    notify?.({
+    notifications.get(CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD)?.({
       method: CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD,
       params: { accountId: "work", loginId: "login-1", success: true, error: null },
     });
@@ -162,22 +186,65 @@ describe("Renderer fixed Model request client", () => {
       success: true,
       error: null,
     });
+    const stateListener = vi.fn();
+    const unsubscribeState = client.subscribeCodexAccounts?.(stateListener);
+    notifications.get(CODEX_ACCOUNT_CHANGED_METHOD)?.({
+      method: CODEX_ACCOUNT_CHANGED_METHOD,
+      params: snapshot,
+    });
+    expect(stateListener).toHaveBeenCalledWith(snapshot);
+    unsubscribeState?.();
     unsubscribe();
-    expect(remove).toHaveBeenCalledOnce();
+    expect(remove).toHaveBeenCalledTimes(2);
   });
 
-  it("reads and validates read-only accounts from the bound Host without a Thread ID", async () => {
+  it("reads and validates progressive read-only accounts from the bound Host", async () => {
     const account = {
       harnessId: "sample-agent",
       harnessName: "Sample Agent",
       credits: { usedPercent: 0, periodType: "weekly" },
     };
-    const sendRequest = vi.fn().mockResolvedValue({ accounts: [account] });
+    const sendRequest = vi
+      .fn()
+      .mockResolvedValueOnce({
+        sources: [{ harnessId: "sample-agent", harnessName: "Sample Agent" }],
+      })
+      .mockResolvedValueOnce({
+        harnessId: "sample-agent",
+        harnessName: "Sample Agent",
+        account: { credits: account.credits },
+      })
+      .mockResolvedValueOnce({ accounts: [account] });
     const client = createRendererModelClient([{ sendRequest }]);
-    expect(await client?.listHarnessAccounts?.()).toEqual({ accounts: [account] });
-    expect(sendRequest).toHaveBeenCalledExactlyOnceWith("codexhost/harness/accounts/list", {});
-    sendRequest.mockResolvedValueOnce({ accounts: [{ ...account, token: "private" }] });
-    await expect(client?.listHarnessAccounts?.()).rejects.toThrow();
+    await expect(client?.listHarnessAccountSources?.()).resolves.toEqual({
+      sources: [{ harnessId: "sample-agent", harnessName: "Sample Agent" }],
+    });
+    await expect(
+      client?.inspectHarnessAccount?.({
+        harnessId: harnessIdSchema.parse("sample-agent"),
+        refresh: true,
+      }),
+    ).resolves.toEqual({
+      harnessId: "sample-agent",
+      harnessName: "Sample Agent",
+      account: { credits: account.credits },
+    });
+    await expect(client?.listHarnessAccounts?.({ refresh: true })).resolves.toEqual({
+      accounts: [account],
+    });
+    expect(sendRequest.mock.calls).toEqual([
+      [HARNESS_ACCOUNT_SOURCES_METHOD, {}],
+      [HARNESS_ACCOUNT_INSPECT_METHOD, { harnessId: "sample-agent", refresh: true }],
+      ["codexhost/harness/accounts/list", { refresh: true }],
+    ]);
+    sendRequest.mockResolvedValueOnce({
+      harnessId: "sample-agent",
+      harnessName: "Sample Agent",
+      account: { credits: account.credits, token: "private" },
+    });
+    await expect(
+      client?.inspectHarnessAccount?.({ harnessId: harnessIdSchema.parse("sample-agent") }),
+    ).rejects.toThrow();
   });
 
   it("reads plugin descriptors from its own target and rejects backend or executable metadata", async () => {
@@ -280,29 +347,31 @@ describe("Renderer fixed Model request client", () => {
     const client = createRendererModelClient([{ addNotificationCallback, sendRequest }]);
     if (!client) throw new Error("Synthetic Model client was not created");
     expect(Object.keys(client).sort()).toEqual([
-      "activateCodexAccount",
       "cancelCodexAccountLogin",
       "checkUpdate",
       "consumeCodexAccountResetCredit",
-      "createCodexAccount",
       "deleteCodexAccount",
       "executeThreadCommand",
       "forkThread",
       "importHarnessSession",
       "inspectCodexAccountUsage",
       "inspectHarness",
+      "inspectHarnessAccount",
       "inspectHarnessCommands",
       "inspectThread",
       "inspectThreadCommands",
       "inspectThreadUsage",
       "listCodexAccounts",
+      "listHarnessAccountSources",
       "listHarnessAccounts",
       "listHarnessPlugins",
       "listHarnessSessions",
       "listSessionImportSources",
       "listThreadOwnership",
+      "logoutCodexAccount",
       "openHarnessWebUi",
       "readUpdateStatus",
+      "recoverCodexAccounts",
       "refreshCodexAccounts",
       "selectThreadModel",
       "selectThreadPermissionMode",
@@ -310,7 +379,9 @@ describe("Renderer fixed Model request client", () => {
       "startCodexAccountLogin",
       "startUpdate",
       "subscribeCodexAccountLogin",
+      "subscribeCodexAccounts",
       "subscribeThreadUsage",
+      "switchCodexAccount",
     ]);
 
     await expect(client.inspectHarness({ harnessId: piHarnessId, refresh: true })).resolves.toEqual(

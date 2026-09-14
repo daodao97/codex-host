@@ -3,10 +3,23 @@ import { WORKSPACE_CONTRACT_VERSION } from "./version.js";
 
 export {
   harnessAccountSnapshotSchema,
+  harnessAccountSourceSchema,
+  harnessAccountSourceListParamsSchema,
+  harnessAccountSourceListResultSchema,
+  harnessAccountInspectParamsSchema,
+  harnessAccountInspectResultSchema,
   harnessAccountListParamsSchema,
   harnessAccountListResultSchema,
 } from "./harness-accounts.js";
-export type { HarnessAccountSnapshot, HarnessAccountListResult } from "./harness-accounts.js";
+export type {
+  HarnessAccountSnapshot,
+  HarnessAccountSource,
+  HarnessAccountSourceListResult,
+  HarnessAccountInspectParams,
+  HarnessAccountInspectResult,
+  HarnessAccountListParams,
+  HarnessAccountListResult,
+} from "./harness-accounts.js";
 
 export {
   HARNESS_PLUGIN_ROUTE_PREFIX,
@@ -42,7 +55,12 @@ export {
   codexAccountResetCreditConsumeOutcomeSchema,
   codexAccountResetCreditConsumeResultSchema,
   codexAccountActivateParamsSchema,
-  codexAccountCreateParamsSchema,
+  codexAccountSwitchParamsSchema,
+  codexAccountSwitchResultSchema,
+  codexAccountChangedSchema,
+  codexAccountPhaseSchema,
+  codexAccountPendingOperationSchema,
+  codexAccountCapabilitiesSchema,
   codexAccountDeleteParamsSchema,
   codexAccountDeleteResultSchema,
   codexAccountListResultSchema,
@@ -51,7 +69,10 @@ export {
   codexAccountLoginCompletedSchema,
   codexAccountLoginStartParamsSchema,
   codexAccountLoginStartResultSchema,
-  codexAccountMutationResultSchema,
+  codexAccountLogoutParamsSchema,
+  codexAccountLogoutResultSchema,
+  codexAccountRecoverParamsSchema,
+  codexAccountRecoverResultSchema,
   codexAccountPlanTypeSchema,
   codexAccountSchema,
 } from "./codex-accounts.js";
@@ -62,7 +83,12 @@ export type {
   CodexAccountResetCreditConsumeOutcome,
   CodexAccountResetCreditConsumeResult,
   CodexAccountActivateParams,
-  CodexAccountCreateParams,
+  CodexAccountSwitchParams,
+  CodexAccountSwitchResult,
+  CodexAccountChanged,
+  CodexAccountPhase,
+  CodexAccountPendingOperation,
+  CodexAccountCapabilities,
   CodexAccountDeleteParams,
   CodexAccountDeleteResult,
   CodexAccountListResult,
@@ -71,7 +97,10 @@ export type {
   CodexAccountLoginCompleted,
   CodexAccountLoginStartParams,
   CodexAccountLoginStartResult,
-  CodexAccountMutationResult,
+  CodexAccountLogoutParams,
+  CodexAccountLogoutResult,
+  CodexAccountRecoverParams,
+  CodexAccountRecoverResult,
   CodexAccountPlanType,
   CodexAccountSummary,
 } from "./codex-accounts.js";

@@ -77,7 +77,7 @@ function renderAccountUsage(
 function usage(snapshot: AccountCreditsSnapshot = credits, display: "used" | "remaining" = "used") {
   const result = renderAccountUsage(
     document,
-    { status: "ready", credits: snapshot },
+    { status: "ready", credits: snapshot, freshness: "live", observedAt: null },
     messages,
     display,
     vi.fn(),
@@ -90,7 +90,12 @@ describe("Account limit windows", () => {
   it("does not synthesize a 5h window for weekly-only accounts", () => {
     const result = renderAccountUsage(
       document,
-      { status: "ready", credits: { usedPercent: 9, periodType: "seven_day" } },
+      {
+        status: "ready",
+        credits: { usedPercent: 9, periodType: "seven_day" },
+        freshness: "live",
+        observedAt: null,
+      },
       messages,
       "used",
       vi.fn(),
@@ -110,6 +115,8 @@ describe("Account limit windows", () => {
       document,
       {
         status: "ready",
+        freshness: "live",
+        observedAt: null,
         credits: {
           ...credits,
           productUsage: [
@@ -183,7 +190,7 @@ describe("Quota comparison columns", () => {
   function columns(credits: AccountCreditsSnapshot) {
     const result = renderUsage(
       document,
-      { status: "ready", credits },
+      { status: "ready", credits, freshness: "live", observedAt: null },
       messages,
       "remaining",
       vi.fn(),
@@ -217,41 +224,6 @@ describe("Quota comparison columns", () => {
     expect(text(result.cells[0])).toContain("9%");
     expect(text(result.cells[1])).toContain("80%");
     expect(result.additional && text(result.additional)).toContain("65%");
-  });
-
-  it.each([
-    { usedPercent: 20, periodType: "monthly" as const },
-    { usedPercent: 20, periodType: "unknown" as const },
-    { usedPercent: 20, periodType: "seven_day" as const, label: "Opus · 7-day" },
-    { usedPercent: 20, periodType: "five_hour" as const, label: "Model group · 5-hour" },
-  ])(
-    "keeps monthly and scoped primary usage out of total columns: $periodType/$label",
-    (credits) => {
-      const result = columns(credits);
-      expect(
-        result.cells.flatMap(elements).some((el) => el.attributes.get("role") === "meter"),
-      ).toBe(false);
-      expect(result.additional && text(result.additional)).toContain(
-        credits.label ?? (credits.periodType === "monthly" ? "月额度" : "额度"),
-      );
-      expect(result.additional && text(result.additional)).toContain("80%");
-    },
-  );
-
-  it("retains model-specific, product and unknown reset data without inventing a window", () => {
-    const result = columns({
-      ...credits,
-      resetsAt: "invalid",
-      productUsage: [
-        { product: "Sonnet · 7-day", usagePercent: 25 },
-        { product: "GrokBuild", usagePercent: 0 },
-      ],
-    });
-    expect(text(result.cells[1])).toContain("—");
-    expect(text(result.cells[1])).not.toContain("未提供此窗口");
-    expect(result.additional && text(result.additional)).toContain("Sonnet · 7-day");
-    expect(result.additional && text(result.additional)).toContain("Build");
-    expect(elements(result.cells[0]).some((el) => el.tagName === "time")).toBe(false);
   });
 });
 

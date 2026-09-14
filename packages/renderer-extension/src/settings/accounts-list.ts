@@ -150,15 +150,21 @@ export function renderAccountRows(
   account: CodexAccountSummary,
   messages: RendererSettingsMessages,
   input: {
+    current: boolean;
     usage: AccountUsageViewState | undefined;
     display: AccountUsageDisplay;
     actionsDisabled: boolean;
+    switchDisabled: boolean;
+    loginDisabled: boolean;
+    deleteDisabled: boolean;
+    logoutDisabled: boolean;
     usingReset: boolean;
     resetDisabled: boolean;
     resetExpanded: boolean;
     onActivate: () => void;
     onSignIn: () => void;
     onDelete: () => void;
+    onLogout: () => void;
     onRetry: () => void;
     onUseReset?: () => void;
     onResetExpanded: (open: boolean) => void;
@@ -183,11 +189,20 @@ export function renderAccountRows(
       agent: "Codex",
       plan: accountPlanLabel(account.planType),
       highlighted: account.planType === "pro" || account.planType === "prolite",
-      active: account.active,
+      active: input.current,
       mark,
     }),
   );
-  const usage = renderAccountUsage(document, input.usage, messages, input.display, input.onRetry);
+  // Codex Pro 20x exposes extra model-scoped limits; this page intentionally shows only its
+  // generic weekly allowance so the Account row has one actionable quota.
+  const usage = renderAccountUsage(
+    document,
+    input.usage,
+    messages,
+    input.display,
+    input.onRetry,
+    account.planType === "pro" ? "weekly-only" : "all",
+  );
   if (usage.additional) personCell.append(usage.additional);
   const actionsCell = document.createElement("td");
   actionsCell.className = "settings-account-management-cell";
@@ -195,29 +210,28 @@ export function renderAccountRows(
   management.className = "settings-account-management";
   const actions = document.createElement("div");
   actions.className = "settings-account-actions";
-  if (!account.active) {
+  const more: HTMLButtonElement[] = [];
+  if (!input.current) {
     const activate = document.createElement("button");
     activate.type = "button";
     activate.className = "settings-account-action";
     activate.textContent = messages.accountUse;
     activate.title = messages.accountDefaultHint;
     activate.dataset.accountFocus = `${account.accountId}:activate`;
-    activate.disabled = input.actionsDisabled;
+    activate.disabled = input.actionsDisabled || input.switchDisabled;
     activate.addEventListener("click", input.onActivate);
     actions.append(activate);
   }
-  if (!account.email) {
-    const signIn = document.createElement("button");
-    signIn.type = "button";
-    signIn.className = "settings-account-action";
-    signIn.textContent = messages.accountSignIn;
-    signIn.dataset.accountFocus = `${account.accountId}:login`;
-    signIn.disabled = input.actionsDisabled;
-    signIn.addEventListener("click", input.onSignIn);
-    actions.append(signIn);
-  }
-  const more: HTMLButtonElement[] = [];
-  if (account.email && input.usage) {
+  const signIn = document.createElement("button");
+  signIn.type = "button";
+  signIn.className = "settings-account-action";
+  signIn.textContent = messages.accountSignIn;
+  signIn.dataset.accountFocus = `${account.accountId}:login`;
+  signIn.disabled = input.actionsDisabled || input.loginDisabled;
+  signIn.addEventListener("click", input.onSignIn);
+  if (account.email) more.push(signIn);
+  else actions.append(signIn);
+  if (input.usage) {
     const refresh = document.createElement("button");
     refresh.type = "button";
     refresh.className = "settings-account-action";
@@ -227,15 +241,23 @@ export function renderAccountRows(
     refresh.addEventListener("click", input.onRetry);
     more.push(refresh);
   }
-  // isDefault protects the native Account home; active selects the Account for new tasks.
-  if (!account.isDefault) {
+  if (input.current) {
+    const logout = document.createElement("button");
+    logout.type = "button";
+    logout.className = "settings-account-action";
+    logout.textContent = messages.accountLogout;
+    logout.dataset.accountFocus = `${account.accountId}:logout`;
+    logout.disabled = input.actionsDisabled || input.logoutDisabled;
+    logout.addEventListener("click", input.onLogout);
+    more.push(logout);
+  } else {
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "settings-account-action settings-account-delete";
     remove.textContent = messages.accountDelete;
     remove.dataset.accountFocus = `${account.accountId}:delete`;
     remove.setAttribute("aria-label", `${messages.accountDelete}: ${name.full}`);
-    remove.disabled = input.actionsDisabled;
+    remove.disabled = input.actionsDisabled || input.deleteDisabled;
     remove.addEventListener("click", input.onDelete);
     more.push(remove);
   }
@@ -253,12 +275,25 @@ export function renderAccountRows(
     );
   management.append(actions);
   actionsCell.append(management);
+  const continuationRows = usage.continuationCells.map((cells) => {
+    const continuation = document.createElement("tr");
+    continuation.className = "settings-account-row settings-account-quota-continuation-row";
+    continuation.dataset.accountId = account.accountId;
+    continuation.append(...cells);
+    return continuation;
+  });
+  if (continuationRows.length > 0) {
+    personCell.rowSpan = continuationRows.length + 1;
+    personCell.className += " settings-account-spanning-cell";
+    actionsCell.rowSpan = continuationRows.length + 1;
+    actionsCell.className += " settings-account-spanning-cell";
+  }
   row.append(personCell, ...usage.cells, actionsCell);
   const reset =
     input.usage?.status === "ready"
       ? renderAccountResetCredits(document, input.usage.credits, messages, input)
       : null;
-  if (!reset) return [row];
+  if (!reset) return [row, ...continuationRows];
   const detailsRow = document.createElement("tr");
   detailsRow.className = "settings-account-details-row";
   detailsRow.id = `settings-account-reset-${++resetDetailsSequence}`;
@@ -276,15 +311,15 @@ export function renderAccountRows(
     input.onResetExpanded(!detailsRow.hidden);
   });
   management.append(reset.summary);
-  return [row, detailsRow];
+  return [row, ...continuationRows, detailsRow];
 }
 
-export function renderHarnessAccountRow(
+export function renderHarnessAccountRows(
   document: Document,
   account: HarnessAccountListResult["accounts"][number],
   messages: RendererSettingsMessages,
   display: AccountUsageDisplay,
-): HTMLTableRowElement {
+): HTMLTableRowElement[] {
   const row = document.createElement("tr");
   row.className = "settings-account-row";
   row.dataset.harnessId = account.harnessId;
@@ -308,10 +343,11 @@ export function renderHarnessAccountRow(
   );
   const usage = renderAccountUsage(
     document,
-    { status: "ready", credits: account.credits },
+    { status: "ready", credits: account.credits, freshness: "live", observedAt: null },
     messages,
     display,
     () => undefined,
+    account.harnessId === "grok" ? "weekly-only" : "all",
   );
   if (usage.additional) personCell.append(usage.additional);
   const managementCell = document.createElement("td");
@@ -329,6 +365,19 @@ export function renderHarnessAccountRow(
   });
   management.append(label, info);
   managementCell.append(management);
+  const continuationRows = usage.continuationCells.map((cells) => {
+    const continuation = document.createElement("tr");
+    continuation.className = "settings-account-row settings-account-quota-continuation-row";
+    continuation.dataset.harnessId = account.harnessId;
+    continuation.append(...cells);
+    return continuation;
+  });
+  if (continuationRows.length > 0) {
+    personCell.rowSpan = continuationRows.length + 1;
+    personCell.className += " settings-account-spanning-cell";
+    managementCell.rowSpan = continuationRows.length + 1;
+    managementCell.className += " settings-account-spanning-cell";
+  }
   row.append(personCell, ...usage.cells, managementCell);
-  return row;
+  return [row, ...continuationRows];
 }
