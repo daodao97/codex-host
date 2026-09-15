@@ -1,5 +1,5 @@
 import { AccountRateLimits } from "./codex-runtime/account-rate-limits.js";
-import { ManagedNativeAuth } from "./managed-native-auth.js";
+import { NativeAccountObserver } from "./native-account-observer.js";
 import { HarnessAccountInspectionCache, listHarnessAccountSources } from "./harness-accounts.js";
 import type { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -29,19 +29,6 @@ import {
   harnessAccountSourceListParamsSchema,
   codexAccountUsageParamsSchema,
   codexAccountUsageResultSchema,
-  codexAccountResetCreditConsumeParamsSchema,
-  codexAccountResetCreditConsumeOutcomeSchema,
-  codexAccountResetCreditConsumeResultSchema,
-  codexAccountActivateParamsSchema,
-  codexAccountSwitchParamsSchema,
-  codexAccountSwitchResultSchema,
-  codexAccountDeleteParamsSchema,
-  codexAccountLogoutParamsSchema,
-  codexAccountLogoutResultSchema,
-  codexAccountRecoverParamsSchema,
-  codexAccountRecoverResultSchema,
-  codexAccountLoginCancelParamsSchema,
-  codexAccountLoginStartParamsSchema,
   harnessPluginListParamsSchema,
   harnessPluginListResultSchema,
   type HarnessPluginDescriptor,
@@ -233,8 +220,6 @@ export interface AppServerHostOptions {
   createOfficialConnection?: () =>
     OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
   accountControl?: CodexAccountControl;
-  /** Explicitly permit stock native login/logout in unmanaged or fallback mode. */
-  allowNativeAuthPassthrough?: boolean;
   /** Shared by all Desktop/Remote Control sessions belonging to one Host. */
   officialRuntimeScope?: OfficialRuntimeScope;
   onCreateRequestRoute?: (observation: CreateRequestRouteObservation) => void;
@@ -294,36 +279,8 @@ function errorMessage(error: unknown): string {
 }
 
 function codexAccountRpcError(error: unknown): { code: number; message: string } {
-  const code = isRecord(error) && typeof error.code === "string" ? error.code : undefined;
-  if (code === "busy")
-    return {
-      code: -32084,
-      message: "Codex is busy",
-    };
-  if (code === "changing") return { code: -32085, message: "Codex Account is changing" };
-  if (code === "unavailable" || code === "recovery-required" || code === "stop-unconfirmed")
-    return { code: -32086, message: "Codex Account is unavailable" };
-  if (code === "unsupported" || code === "unsupported-version" || code === "unsupported-storage")
-    return { code: -32087, message: "Codex Account management is unsupported" };
-  if (code === "authentication-failed")
-    return { code: -32089, message: "Codex Account authentication failed" };
-  if (code === "rollback-failed") return { code: -32090, message: "Codex Account recovery failed" };
   const message = error instanceof Error ? error.message : "";
-  const safe = new Set([
-    "Unknown Codex Account",
-    "Current Codex Account cannot be deleted",
-    "Live quota is available only for the current Codex Account",
-    "Reset credits can be consumed only for the current Codex Account",
-    "Codex Account switching is unsupported",
-    "Codex Account login is unsupported",
-    "SSH Host Account switching is unsupported",
-    "SSH Host Account management is unsupported",
-    "Codex Account sign-in is already in progress",
-    "Inactive Codex Account quota is unavailable",
-    "Legacy Codex Account creation is no longer supported; start login directly",
-    "Legacy Account activation is no longer supported; use codexhost/account/switch",
-  ]);
-  return safe.has(message)
+  return message === "Unknown Codex Account"
     ? { code: -32086, message }
     : { code: -32086, message: "Codex Account operation failed" };
 }
@@ -525,8 +482,7 @@ export class AppServerHost {
   #officialRuntimeScope: OfficialRuntimeScope;
   #ownsOfficialRuntimeScope: boolean;
   #accountControl: CodexAccountControl;
-  #managedAccountControl: boolean;
-  #managedNativeAuth: ManagedNativeAuth | undefined;
+  #nativeAccountObserver: NativeAccountObserver | undefined;
   #externalAdapters: Map<ExternalHarnessId, HarnessAdapter>;
   #pluginDescriptors: HarnessPluginDescriptor[] = [];
   readonly #accountInspections = new HarnessAccountInspectionCache();
@@ -541,7 +497,6 @@ export class AppServerHost {
   #sessionImportRequests: SessionImportRequests | undefined;
   #unregisterDelegationApi: (() => void) | undefined;
   #unsubscribeAccountState: (() => void) | undefined;
-  #unsubscribeAccountLogin: (() => void) | undefined;
   #activeOfficialTurns = new Map<string, string>();
   #pendingOfficialTurnStarts = new Map<unknown, string>();
   #activeWorkDrainWaiters = new Set<() => void>();
@@ -557,6 +512,7 @@ export class AppServerHost {
   #runningSubagentsByParent = new Map<string, Set<string>>();
   #pendingExternalCommandRequests = new Set<string>();
   #closeRequested = false;
+  readonly #pluginLoadAbort = new AbortController();
   #drainActiveWorkOnInputEnd = false;
   #desktopInputEnded = false;
 
@@ -570,16 +526,13 @@ export class AppServerHost {
     this.#writer = new OrderedWriter(this.#options.desktopOutput);
     const environment = this.#options.environment ?? process.env;
     const permanentHome = path.resolve(environment.CODEX_HOME ?? path.join(os.homedir(), ".codex"));
-    const allowNativeAuthPassthrough =
-      options.allowNativeAuthPassthrough ?? options.accountControl === undefined;
     this.#ownsOfficialRuntimeScope = options.officialRuntimeScope === undefined;
     this.#officialRuntimeScope =
       options.officialRuntimeScope ??
       new OfficialRuntimeScope({
         diagnosticOutput: this.#options.diagnosticOutput,
         permanentHome,
-        allowNativeAuthPassthrough,
-        createBackend: (role) =>
+        createBackend: () =>
           createOwnedConnectionBackend(() =>
             options.createOfficialConnection
               ? options.createOfficialConnection()
@@ -588,7 +541,7 @@ export class AppServerHost {
                   arguments: this.#options.arguments,
                   environment: {
                     ...officialEnvironment(environment),
-                    CODEX_HOME: role.home,
+                    CODEX_HOME: permanentHome,
                   },
                   ...(this.#options.spawnOfficial
                     ? { spawnOfficial: this.#options.spawnOfficial }
@@ -596,9 +549,6 @@ export class AppServerHost {
                 }),
           ),
       });
-    this.#managedAccountControl = !(
-      options.allowNativeAuthPassthrough ?? options.accountControl === undefined
-    );
     this.#accountControl =
       options.accountControl ??
       new SingleNativeCodexAccount(() => ({
@@ -606,13 +556,6 @@ export class AppServerHost {
         currentAccountId: "00000000-0000-4000-8000-000000000001",
         phase: this.#officialRuntimeScope.gate.phase,
         revision: this.#officialRuntimeScope.gate.revision,
-        capabilities: {
-          manage: false,
-          switch: false,
-          login: false,
-          delete: false,
-          reason: "unsupported-storage",
-        },
         accounts: [
           {
             accountId: "00000000-0000-4000-8000-000000000001",
@@ -633,26 +576,19 @@ export class AppServerHost {
           accountId: (await this.#currentCodexAccountId()) ?? "signed-out",
         }),
     });
-    this.#managedNativeAuth = this.#managedAccountControl
-      ? new ManagedNativeAuth({
+    this.#nativeAccountObserver = this.#accountControl.refresh
+      ? new NativeAccountObserver({
           control: this.#accountControl,
           scope: this.#officialRuntimeScope,
           notify: (method, params) => this.#writer.json({ method, params }),
-          diagnose: () => this.#diagnose("Codex Account notification could not be delivered"),
+          diagnose: () =>
+            this.#diagnose("Codex Account identity or notification could not be updated"),
         })
       : undefined;
     this.#unsubscribeAccountState = this.#officialRuntimeScope.gate.subscribe(() => {
       const snapshot = this.#accountControl.snapshot();
       void this.#writer
         .json({ method: "codexhost/account/changed", params: jsonValueSchema.parse(snapshot) })
-        .catch(() => undefined);
-    });
-    this.#unsubscribeAccountLogin = this.#accountControl.subscribeLogin((result) => {
-      void this.#writer
-        .json({
-          method: "codexhost/account/login/completed",
-          params: jsonValueSchema.parse(result),
-        })
         .catch(() => undefined);
     });
     this.#repository = new ExternalThreadRepository(
@@ -709,6 +645,7 @@ export class AppServerHost {
   close(): void {
     if (this.#closeRequested) return;
     this.#closeRequested = true;
+    this.#pluginLoadAbort.abort();
     this.#externalSteering.close();
     this.#signalActiveWorkChanged();
     this.#options.desktopInput.destroy();
@@ -718,7 +655,7 @@ export class AppServerHost {
   }
 
   async #closeOfficialRuntime(): Promise<void> {
-    this.#managedNativeAuth?.close();
+    this.#nativeAccountObserver?.close();
     if (this.#ownsOfficialRuntimeScope) await this.#officialRuntimeScope.close();
     await this.#officialRuntime.close();
   }
@@ -732,22 +669,29 @@ export class AppServerHost {
     else desktopInput.destroy();
   }
 
+  async #loadInstalledPlugins(): Promise<void> {
+    if (!this.#options.pluginRoots || this.#closeRequested) return;
+    const plugins = await loadHarnessPlugins({
+      roots: this.#options.pluginRoots,
+      context: this.#options.pluginContext ?? {
+        environment: this.#options.environment ?? process.env,
+        platform: process.platform,
+        managedRemoteHost: false,
+      },
+      reservedIds: new Set(this.#externalAdapters.keys()),
+      signal: this.#pluginLoadAbort.signal,
+      diagnose: (diagnostic) => this.#diagnose(`Harness plugin: ${JSON.stringify(diagnostic)}`),
+    });
+    if (this.#closeRequested) {
+      await plugins.close().catch((error: unknown) => this.#diagnose(error));
+      return;
+    }
+    this.#pluginDescriptors = plugins.list();
+    for (const [id, adapter] of plugins.adapters) this.#externalAdapters.set(id, adapter);
+  }
+
   async run(): Promise<number> {
     try {
-      if (this.#options.pluginRoots) {
-        const plugins = await loadHarnessPlugins({
-          roots: this.#options.pluginRoots,
-          context: this.#options.pluginContext ?? {
-            environment: this.#options.environment ?? process.env,
-            platform: process.platform,
-            managedRemoteHost: false,
-          },
-          reservedIds: new Set(this.#externalAdapters.keys()),
-          diagnose: (diagnostic) => this.#diagnose(`Harness plugin: ${JSON.stringify(diagnostic)}`),
-        });
-        this.#pluginDescriptors = plugins.list();
-        for (const [id, adapter] of plugins.adapters) this.#externalAdapters.set(id, adapter);
-      }
       await this.#repository.initialize();
     } catch (error) {
       this.#diagnose(`Host initialization failed: ${errorMessage(error)}`);
@@ -760,8 +704,6 @@ export class AppServerHost {
       this.#unregisterDelegationApi = undefined;
       this.#unsubscribeAccountState?.();
       this.#unsubscribeAccountState = undefined;
-      this.#unsubscribeAccountLogin?.();
-      this.#unsubscribeAccountLogin = undefined;
       if (this.#options.closeMappingStoreOnExit !== false) {
         await this.#repository.close().catch((closeError) => this.#diagnose(closeError));
       }
@@ -773,14 +715,15 @@ export class AppServerHost {
     } catch (error) {
       this.#diagnose(`Official app-server connection failed: ${errorMessage(error)}`);
       // Keep the Desktop client attached for Host initialization and later recovery.
-      // A shared Account coordinator owns its backend: a new Desktop arriving
-      // during login must not stop that coordinator's authentication-only process.
       if (this.#ownsOfficialRuntimeScope) {
         await this.#officialRuntimeScope.owner
           .stop()
           .catch((closeError: unknown) => this.#diagnose(closeError));
       }
     }
+    await this.#loadInstalledPlugins().catch((error: unknown) => {
+      this.#diagnose(`Harness plugin load failed: ${errorMessage(error)}`);
+    });
     if (this.#closeRequested) await this.#closeOfficialRuntime();
     try {
       void this.#officialRuntime
@@ -789,7 +732,7 @@ export class AppServerHost {
           // A recovered/shared Scope may have outlived this one-shot failure.
           if (this.#officialRuntimeScope.gate.phase !== "unavailable") return;
           // Prove exit without terminally closing the Scope or detaching Desktop.
-          // Account recovery must be able to reuse this same native client.
+          // Backend reconnection must be able to reuse this same native client.
           await this.#officialRuntimeScope.owner.stop();
         })
         .catch((error: unknown) => this.#diagnose(error));
@@ -828,8 +771,6 @@ export class AppServerHost {
       this.#unregisterDelegationApi = undefined;
       this.#unsubscribeAccountState?.();
       this.#unsubscribeAccountState = undefined;
-      this.#unsubscribeAccountLogin?.();
-      this.#unsubscribeAccountLogin = undefined;
       if (this.#options.closeMappingStoreOnExit !== false) {
         await this.#repository.close().catch((error) => this.#diagnose(error));
       }
@@ -904,7 +845,7 @@ export class AppServerHost {
               : undefined;
           const response = await this.#officialRuntime.initializeProtocol(requestObject(request));
           await this.#writer.json({ ...response, id: request.id });
-          this.#managedNativeAuth?.initialized(nativeGeneration);
+          this.#nativeAccountObserver?.initialized(nativeGeneration);
         } catch (error) {
           await this.#writer.json(rpcError(request, -32087, errorMessage(error)));
         }
@@ -920,17 +861,8 @@ export class AppServerHost {
       }
       if (
         request.method === "codexhost/account/usage/inspect" ||
-        request.method === "codexhost/account/rate-limit-reset/consume" ||
         request.method === "codexhost/account/list" ||
-        request.method === "codexhost/account/refresh" ||
-        request.method === "codexhost/account/create" ||
-        request.method === "codexhost/account/delete" ||
-        request.method === "codexhost/account/switch" ||
-        request.method === "codexhost/account/activate" ||
-        request.method === "codexhost/account/login/start" ||
-        request.method === "codexhost/account/login/cancel" ||
-        request.method === "codexhost/account/logout" ||
-        request.method === "codexhost/account/recover"
+        request.method === "codexhost/account/refresh"
       ) {
         this.#dispatchDesktopRequest(() => this.#handleCodexAccountRequest(request));
         continue;
@@ -1070,16 +1002,6 @@ export class AppServerHost {
         continue;
       }
       if (request.method === "thread/list") {
-        if (
-          isRecord(request.params) &&
-          typeof request.params.cursor === "string" &&
-          request.params.cursor.startsWith("codexhost:official-accounts:v1:")
-        ) {
-          await this.#writer.json(
-            rpcError(request, -32602, "Legacy multi-Account cursor expired; reload the first page"),
-          );
-          continue;
-        }
         let listRequest: DecodedThreadListRequest;
         try {
           const decoded = decodeThreadListRequest(request);
@@ -1440,20 +1362,6 @@ export class AppServerHost {
     frame: Buffer<ArrayBufferLike>,
   ): Promise<void> {
     try {
-      const params = isRecord(request.params) ? request.params : null;
-      if (typeof params?.__codexhostAccountId === "string") {
-        await this.#writer.json(
-          rpcError(request, -32088, "Per-draft Codex Account routing is no longer supported"),
-        );
-        return;
-      }
-      if (
-        this.#managedAccountControl &&
-        ["account/login/start", "account/login/cancel", "account/logout"].includes(request.method)
-      ) {
-        await this.#handleManagedNativeAuthRequest(request);
-        return;
-      }
       await this.#officialRuntime.sendFrame(frame);
     } catch {
       if (request.method === "turn/start") {
@@ -1466,25 +1374,12 @@ export class AppServerHost {
     }
   }
 
-  async #handleManagedNativeAuthRequest(request: JsonRpcRequest): Promise<void> {
-    try {
-      if (!this.#managedNativeAuth) throw new Error("Native Account control is unavailable");
-      await this.#managedNativeAuth.request(request.method, requestObject(request), (result) =>
-        this.#writer.json(rpcEnvelope(request, { result })),
-      );
-    } catch (error) {
-      const failure = codexAccountRpcError(error);
-      await this.#writer.json(rpcError(request, failure.code, failure.message));
-    }
-  }
-
   async #handleOfficialOutput(input: {
     accountId: string;
     frame: Buffer<ArrayBufferLike>;
     value: JsonValue;
   }): Promise<void> {
     const parsed = input.value;
-    this.#accountControl.observe(parsed);
     this.#observeOfficialTurnStartResponse(parsed);
     let forwarded: JsonValue = parsed;
     if (isRecord(parsed) && typeof parsed.method === "string" && "id" in parsed) {
@@ -1515,17 +1410,8 @@ export class AppServerHost {
       }
     }
     const rateLimits = observeCodexRateLimits(parsed);
-    if (rateLimits) {
-      this.#officialRateLimits.observe(input.accountId, rateLimits);
-      const accountCredits = this.#officialAccountCredits(input.accountId);
-      if (accountCredits) {
-        void this.#accountControl
-          .recordUsage?.(input.accountId, accountCredits)
-          .catch(() => undefined);
-      }
-    }
-    if (accountScopedNotification && input.accountId !== (await this.#currentCodexAccountId()))
-      return;
+    if (rateLimits) this.#officialRateLimits.observe(input.accountId, rateLimits);
+    // Owner already rejects retired generations.
     try {
       await this.#observeOfficialTurnLifecycle(parsed);
     } catch (error) {
@@ -1534,6 +1420,7 @@ export class AppServerHost {
     this.#routeObservationTracker.bindOfficialResponse(parsed);
     if (forwarded === parsed) await this.#writer.frame(input.frame);
     else await this.#writer.json(forwarded);
+    this.#nativeAccountObserver?.observe(parsed);
   }
 
   async #requestOfficial(method: string, params: JsonObject): Promise<JsonObject> {
@@ -1552,172 +1439,33 @@ export class AppServerHost {
   }
 
   async #codexAccountSnapshot() {
-    return this.#accountControl.snapshot();
+    return this.#accountControl.refresh?.() ?? this.#accountControl.snapshot();
   }
 
   async #handleCodexAccountRequest(request: JsonRpcRequest): Promise<void> {
     try {
       if (request.method === "codexhost/account/usage/inspect") {
         const { accountId, refresh } = codexAccountUsageParamsSchema.parse(requestObject(request));
-        if (
-          !(await this.#codexAccountSnapshot()).accounts.some(
-            (account) => account.accountId === accountId,
-          )
-        )
+        if (accountId !== (await this.#currentCodexAccountId()))
           throw new Error("Unknown Codex Account");
-        if (accountId !== (await this.#currentCodexAccountId())) {
-          if (!this.#accountControl.inspectInactiveUsage) {
-            throw new Error("Inactive Codex Account quota is unavailable");
-          }
-          const inactive = codexAccountUsageResultSchema.parse(
-            await this.#accountControl.inspectInactiveUsage(accountId, refresh === true),
-          );
-          await this.#writer.json(
-            rpcEnvelope(request, { result: jsonValueSchema.parse(inactive) }),
-          );
-          return;
-        }
         const observation = await this.#refreshOfficialRateLimits(accountId, refresh === true);
         const usage = this.#officialRateLimits.get(accountId);
         const accountCredits = this.#officialAccountCredits(accountId);
-        let result =
-          observation.status === "failed" ? this.#accountControl.cachedUsage?.(accountId) : null;
-        if (!result && accountCredits && observation.status !== "failed") {
-          result = this.#accountControl.recordUsage
-            ? { ...(await this.#accountControl.recordUsage(accountId, accountCredits)), usage }
-            : {
-                accountId,
-                usage,
-                accountCredits,
-                freshness: "live" as const,
-                observedAt: observation.observedAt,
-              };
-        }
-        result ??= {
+        const result = codexAccountUsageResultSchema.parse({
           accountId,
           usage,
           ...(accountCredits ? { accountCredits } : {}),
           freshness: observation.status === "live" ? ("live" as const) : ("cached" as const),
           observedAt: observation.observedAt,
-        };
-        const parsed = codexAccountUsageResultSchema.parse(result);
-        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(parsed) }));
-        return;
-      }
-
-      if (request.method === "codexhost/account/rate-limit-reset/consume") {
-        const params = codexAccountResetCreditConsumeParamsSchema.parse(requestObject(request));
-        if (
-          !(await this.#codexAccountSnapshot()).accounts.some(
-            (account) => account.accountId === params.accountId,
-          )
-        )
-          throw new Error("Unknown Codex Account");
-        if (params.accountId !== (await this.#currentCodexAccountId()))
-          throw new Error("Reset credits can be consumed only for the current Codex Account");
-        const response = await this.#officialRuntime.request(
-          "account/rateLimitResetCredit/consume",
-          {
-            idempotencyKey: params.idempotencyKey ?? randomUUID(),
-          },
-        );
-        if (isRecord(response.error)) {
-          await this.#writer.json(rpcEnvelope(request, { error: response.error }));
-          return;
-        }
-        const result = isRecord(response.result) ? response.result : null;
-        const outcome = codexAccountResetCreditConsumeOutcomeSchema.safeParse(result?.outcome);
-        if (!outcome.success) throw new Error("Official reset-credit consume response is invalid");
-        this.#officialRateLimits.reset(params.accountId);
-        if (outcome.data === "reset") await this.#refreshOfficialRateLimits(params.accountId);
-        const accountCredits = this.#officialAccountCredits(params.accountId);
-        const consumeResult = codexAccountResetCreditConsumeResultSchema.parse({
-          accountId: params.accountId,
-          outcome: outcome.data,
-          ...(accountCredits ? { accountCredits } : {}),
-        });
-        await this.#writer.json(
-          rpcEnvelope(request, { result: jsonValueSchema.parse(consumeResult) }),
-        );
-        return;
-      }
-
-      if (
-        request.method === "codexhost/account/list" ||
-        request.method === "codexhost/account/refresh"
-      ) {
-        await this.#writer.json(
-          rpcEnvelope(request, {
-            result: jsonValueSchema.parse(await this.#codexAccountSnapshot()),
-          }),
-        );
-        return;
-      }
-      if (request.method === "codexhost/account/create") {
-        requestObject(request);
-        throw new Error(
-          "Legacy Codex Account creation is no longer supported; start login directly",
-        );
-      }
-      if (request.method === "codexhost/account/switch") {
-        const params = codexAccountSwitchParamsSchema.parse(requestObject(request));
-        await this.#accountControl.switch(params.accountId);
-        const snapshot = this.#accountControl.snapshot();
-        if (snapshot.currentAccountId !== params.accountId)
-          throw new Error("Codex Account switch is not ready");
-        const result = codexAccountSwitchResultSchema.parse({
-          currentAccountId: snapshot.currentAccountId,
-          phase: snapshot.phase,
-          revision: snapshot.revision,
         });
         await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
         return;
       }
-      if (request.method === "codexhost/account/activate") {
-        codexAccountActivateParamsSchema.parse(requestObject(request));
-        throw new Error(
-          "Legacy Account activation is no longer supported; use codexhost/account/switch",
-        );
-      }
-      if (request.method === "codexhost/account/delete") {
-        const params = codexAccountDeleteParamsSchema.parse(requestObject(request));
-        if (params.accountId === (await this.#currentCodexAccountId()))
-          throw new Error("Current Codex Account cannot be deleted");
-        await this.#accountControl.remove(params.accountId);
-        this.#officialRateLimits.reset(params.accountId);
-        await this.#writer.json(
-          rpcEnvelope(request, { result: { deletedAccountId: params.accountId } }),
-        );
-        return;
-      }
-      if (request.method === "codexhost/account/login/start") {
-        const params = codexAccountLoginStartParamsSchema.parse(requestObject(request));
-        const result = await this.#accountControl.startLogin(params.accountId);
-        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
-        return;
-      }
-      if (request.method === "codexhost/account/logout") {
-        codexAccountLogoutParamsSchema.parse(requestObject(request));
-        await this.#accountControl.logout();
-        const snapshot = this.#accountControl.snapshot();
-        const result = codexAccountLogoutResultSchema.parse({
-          currentAccountId: snapshot.currentAccountId,
-          phase: snapshot.phase,
-          revision: snapshot.revision,
-        });
-        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
-        return;
-      }
-      if (request.method === "codexhost/account/recover") {
-        codexAccountRecoverParamsSchema.parse(requestObject(request));
-        await this.#accountControl.recover();
-        const result = codexAccountRecoverResultSchema.parse(this.#accountControl.snapshot());
-        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
-        return;
-      }
-      const params = codexAccountLoginCancelParamsSchema.parse(requestObject(request));
-      const cancelled = await this.#accountControl.cancelLogin(params.loginId);
-      await this.#writer.json(rpcEnvelope(request, { result: { cancelled } }));
+      await this.#writer.json(
+        rpcEnvelope(request, {
+          result: jsonValueSchema.parse(await this.#codexAccountSnapshot()),
+        }),
+      );
     } catch (error) {
       const failure = codexAccountRpcError(error);
       await this.#writer.json(rpcError(request, failure.code, failure.message));
@@ -2493,6 +2241,7 @@ export class AppServerHost {
         return;
       }
       const accountId = await this.#currentCodexAccountId();
+      if (accountId) await this.#refreshOfficialRateLimits(accountId);
       const accountCredits = this.#officialAccountCredits(accountId ?? undefined);
       const result = threadUsageInspectionSchema.parse({
         threadId: params.data.threadId,
