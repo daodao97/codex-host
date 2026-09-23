@@ -20,6 +20,7 @@ import type {
 } from "@codexhost/shared-contracts";
 
 import type { HostUsage } from "./usage.js";
+import type { HarnessCredentialExport, HarnessCredentialImports } from "./credential-imports.js";
 
 export type {
   HarnessInspection,
@@ -329,12 +330,16 @@ export interface HostFileChange {
   path: string;
   kind: "add" | "update" | "delete";
   unifiedDiff: string;
+  /** Local snippets have no file coordinates and cannot be composed as whole-file patches. */
+  diffScope?: "fragment";
 }
 
 export interface HostFileChangeItem {
   type: "fileChange";
   itemId: HostItemId;
   changes: HostFileChange[];
+  /** Native results supersede inferred previews from these tool Items. */
+  sourceItemIds?: HostItemId[];
 }
 
 export type HostSubagentStatus = "pending" | "running" | "completed" | "failed" | "interrupted";
@@ -552,6 +557,8 @@ export interface HarnessSessionImportCapability {
 }
 
 export interface HarnessAdapter {
+  readonly credentialExport?: HarnessCredentialExport;
+  readonly credentialImports?: HarnessCredentialImports;
   readonly harnessId: HarnessId;
   /** Static command metadata. Reading it must not inspect, connect to, or open a Native Session. */
   readonly commandCatalog?: HarnessCommandCatalog;

@@ -1,5 +1,7 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
@@ -894,6 +896,19 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
 });
 
 describe("ClaudeSdkTransport process environment", () => {
+  it("attributes persisted sessions to the CodexHost SDK entrypoint", async () => {
+    const value = fixture("create", "default", harnessThinkingOptionIdSchema.parse("auto"), {
+      CLAUDE_CODE_ENTRYPOINT: "sdk-ts",
+    });
+
+    await value.transport.start();
+    expect(options(value).env).toMatchObject({
+      CLAUDE_CODE_ENTRYPOINT: "codexhost-sdk",
+      CLAUDE_AGENT_SDK_CLIENT_APP: "codexhost-claude-code-adapter/0.0.0",
+    });
+    await value.transport.close();
+  });
+
   it("adds the Host Node runtime to the Claude process PATH", async () => {
     const value = fixture("create", "default", harnessThinkingOptionIdSchema.parse("auto"), {
       PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
@@ -1033,28 +1048,67 @@ describe("ClaudeSdkTransport Model control", () => {
   it("detects Model selection without probing Context Usage", async () => {
     const value = fixture();
     value.fakeQuery.getContextUsage.mockRejectedValueOnce(new Error("must not be called"));
-    const inspector = new ClaudeSdkModelInspector({
-      command: process.execPath,
-      cwd: process.cwd(),
-      closeTimeoutMs: 100,
-      queryFactory: value.queryFactory,
-    });
+    const configDirectory = await mkdtemp(path.join(os.tmpdir(), "codexhost-claude-inspect-"));
+    try {
+      const inspector = new ClaudeSdkModelInspector({
+        command: process.execPath,
+        environment: { CLAUDE_CONFIG_DIR: configDirectory, PATH: process.env.PATH },
+        cwd: process.cwd(),
+        closeTimeoutMs: 100,
+        queryFactory: value.queryFactory,
+      });
 
-    await expect(inspector.inspect()).resolves.toMatchObject({ canSelectModel: true });
-    expect(value.fakeQuery.getContextUsage).not.toHaveBeenCalled();
+      await expect(inspector.inspect()).resolves.toMatchObject({ canSelectModel: true });
+      expect(value.fakeQuery.getContextUsage).not.toHaveBeenCalled();
+    } finally {
+      await rm(configDirectory, { recursive: true, force: true });
+    }
   });
 
   it("inspects initialization Models with persistence disabled", async () => {
     const value = fixture();
+    const configDirectory = await mkdtemp(path.join(os.tmpdir(), "codexhost-claude-inspect-"));
     const inspector = new ClaudeSdkModelInspector({
       command: process.execPath,
-      environment: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
+      environment: { CLAUDE_CONFIG_DIR: configDirectory, PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
       cwd: process.cwd(),
       closeTimeoutMs: 100,
       queryFactory: value.queryFactory,
     });
 
-    await expect(inspector.inspect()).resolves.toEqual({
+    try {
+      await expect(inspector.inspect()).resolves.toEqual({
+        models: [
+          {
+            value: "default",
+            displayName: "Default",
+            description: "Default",
+            supportsAutoMode: true,
+          },
+        ],
+        canSelectModel: true,
+        canSelectPermissionMode: true,
+      });
+      expect(value.fakeQuery.getContextUsage).not.toHaveBeenCalled();
+      expect(options(value)).toMatchObject({
+        persistSession: false,
+        includePartialMessages: false,
+        tools: [],
+        settingSources: ["user"],
+      });
+      expect(options(value).env?.PATH?.split(path.delimiter)).toContain(
+        path.dirname(process.execPath),
+      );
+      expect(options(value)).not.toHaveProperty("sessionId");
+      expect(options(value)).not.toHaveProperty("resume");
+    } finally {
+      await rm(configDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("merges user modelPicker.options into the inspected Model catalog", async () => {
+    const value = fixture();
+    value.fakeQuery.initializationResult.mockResolvedValueOnce({
       models: [
         {
           value: "default",
@@ -1062,22 +1116,76 @@ describe("ClaudeSdkTransport Model control", () => {
           description: "Default",
           supportsAutoMode: true,
         },
+        {
+          value: "sonnet",
+          displayName: "Sonnet",
+          description: "Sonnet",
+          supportsAutoMode: true,
+        },
+        {
+          value: "opus",
+          displayName: "Opus",
+          description: "Opus",
+          supportsAutoMode: true,
+        },
       ],
-      canSelectModel: true,
-      canSelectPermissionMode: true,
     });
-    expect(value.fakeQuery.getContextUsage).not.toHaveBeenCalled();
-    expect(options(value)).toMatchObject({
-      persistSession: false,
-      includePartialMessages: false,
-      tools: [],
-      settingSources: ["user"],
-    });
-    expect(options(value).env?.PATH?.split(path.delimiter)).toContain(
-      path.dirname(process.execPath),
-    );
-    expect(options(value)).not.toHaveProperty("sessionId");
-    expect(options(value)).not.toHaveProperty("resume");
+    const configDirectory = await mkdtemp(path.join(os.tmpdir(), "codexhost-claude-picker-"));
+    try {
+      await writeFile(
+        path.join(configDirectory, "settings.json"),
+        JSON.stringify({
+          modelPicker: {
+            replaceBuiltInOptions: true,
+            options: [
+              {
+                model: "glm-glm-5.3-cp[1m]",
+                label: "glm-glm-5.3-cp (1M)",
+                description: "custom gateway",
+              },
+              {
+                model: "deepseek-v4-pro-saas[1m]",
+                label: "deepseek-v4-pro-saas (1M)",
+                description: "custom gateway",
+                behavesAs: "sonnet",
+              },
+            ],
+          },
+        }),
+      );
+      const inspector = new ClaudeSdkModelInspector({
+        command: process.execPath,
+        environment: { CLAUDE_CONFIG_DIR: configDirectory, PATH: process.env.PATH },
+        cwd: process.cwd(),
+        closeTimeoutMs: 100,
+        queryFactory: value.queryFactory,
+      });
+      await expect(inspector.inspect()).resolves.toEqual({
+        models: [
+          {
+            value: "default",
+            displayName: "Default",
+            description: "Default",
+            supportsAutoMode: true,
+          },
+          {
+            value: "glm-glm-5.3-cp[1m]",
+            displayName: "glm-glm-5.3-cp (1M)",
+            description: "custom gateway",
+          },
+          {
+            value: "deepseek-v4-pro-saas[1m]",
+            displayName: "deepseek-v4-pro-saas (1M)",
+            description: "custom gateway",
+            resolvedModel: "sonnet",
+          },
+        ],
+        canSelectModel: true,
+        canSelectPermissionMode: true,
+      });
+    } finally {
+      await rm(configDirectory, { recursive: true, force: true });
+    }
   });
 });
 

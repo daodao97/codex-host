@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readGrokCredentials } from "./grok-credential-export.js";
 import path from "node:path";
 
 import type {
@@ -740,7 +741,7 @@ class GrokHarnessSession implements HarnessSession {
     model: HarnessModelRef,
     thinkingOptionId?: HarnessThinkingOptionId,
   ): Promise<HarnessResult<ModelSelectCompleted | ThinkingSelectCompleted>> {
-    if (this.#active || this.#configuring) {
+    if (this.#configuring) {
       return {
         ok: false,
         error: {
@@ -1174,6 +1175,7 @@ class GrokHarnessSession implements HarnessSession {
     const fileItem: HostFileChangeItem = {
       type: "fileChange",
       itemId: hostItemIdSchema.parse(this.#randomUUID()),
+      sourceItemIds: [tool.item.itemId],
       changes,
     };
     this.#event({ type: "item.started", turnId: active.command.turnId, item: fileItem });
@@ -1419,6 +1421,12 @@ class GrokHarnessSession implements HarnessSession {
 }
 
 export class GrokAdapter implements HarnessAdapter {
+  readonly credentialExport = {
+    read: () =>
+      this.#closePromise
+        ? Promise.resolve([])
+        : readGrokCredentials(this.#environment ?? process.env),
+  };
   readonly commandCatalog = grokCommandCatalog;
   readonly harnessId: HarnessId = grokHarnessId;
   readonly subagents: HarnessSubagentCapability = {

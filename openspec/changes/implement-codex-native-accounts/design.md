@@ -1,6 +1,6 @@
 ## Context
 
-See [Codex native Account design](../../../docs/codex-native-account-switching-design.md). An Account is an authentication identity, not a Harness, Model, Provider or Billing Source. Permanent home and native Thread storage remain fixed. This design supersedes the previous Journal/recovery design.
+See [Codex native Account design](../../../docs/product/codex-native-account-switching-design.md). An Account is an authentication identity, not a Harness, Model, Provider or Billing Source. Permanent home and native Thread storage remain fixed. This design supersedes the previous Journal/recovery design.
 
 ## Decisions
 
@@ -25,10 +25,6 @@ Record each failed step once to Host diagnostic output and `.codexhost-native-ac
 ## Deferred decisions
 
 Consolidating OfficialWorkGate lease kinds; choosing between Owner lazy resume and Renderer navigation restoration; narrowing external termination to the same CODEX_HOME or app-server only; re-evaluating inactive-account OAuth refresh. None is claimed complete by this change.
-
-## Source and licenses
-
-The native credential envelope and inactive quota reading reference opencodex `2d4d7a22381a2e497c2442902104619e25f937c7`. Reused code retains `third-party/opencodex.LICENSE`; installer/npm notices include the MIT text and source. Release scripts and license files are unchanged.
 
 ## Risks and validation
 

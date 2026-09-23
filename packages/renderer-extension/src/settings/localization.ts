@@ -1,3 +1,8 @@
+import {
+  credentialImportEnglish,
+  credentialImportChinese,
+  type CredentialImportMessages,
+} from "./credential-import-messages.js";
 import type { DefaultRendererSettingsPageId } from "./pages.js";
 
 export const RENDERER_SETTINGS_LOCALES = ["en", "zh-CN"] as const;
@@ -18,6 +23,7 @@ export interface RendererSettingsLanguageControl {
 }
 
 export interface RendererSettingsMessages {
+  readonly credentialImports: CredentialImportMessages;
   readonly locale: RendererSettingsLocale;
   readonly title: string;
   readonly close: string;
@@ -26,6 +32,41 @@ export interface RendererSettingsMessages {
   readonly generalSection: string;
   readonly otherSection: string;
   readonly appearanceDescription: string;
+  readonly appearanceGroup: string;
+  readonly loadedSessions: {
+    title: string;
+    description: string;
+    columns: readonly string[];
+    empty: string;
+    failed: string;
+    unavailable: string;
+    loading: string;
+    minutes: string;
+    states: Record<"idle" | "running" | "busy" | "closing" | "failed" | "blocked", string>;
+    reasons: Record<
+      | "none"
+      | "disabled"
+      | "timeout"
+      | "operation"
+      | "background"
+      | "identity"
+      | "persistence"
+      | "closeFailed",
+      string
+    >;
+  };
+  readonly idleReleaseSection: string;
+  readonly idleReleaseTitle: string;
+  readonly idleReleaseDescription: string;
+  readonly idleReleaseHelpLabel: string;
+  readonly idleReleaseHelp: readonly string[];
+  readonly idleReleaseTimeout: string;
+  readonly idleReleaseTimeoutDescription: string;
+  readonly idleReleaseMinutes: string;
+  readonly idleReleaseInvalid: string;
+  readonly idleReleasePending: string;
+  readonly idleReleaseUnavailable: string;
+  readonly idleReleaseFailed: string;
   readonly reasoningSoftWrapTitle: string;
   readonly reasoningSoftWrapDescription: string;
   readonly pageUnavailable: string;
@@ -52,7 +93,6 @@ export interface RendererSettingsMessages {
   readonly sessionImportUpdatedAt: string;
   readonly sessionImportSessionId: string;
   readonly sessionImportRunning: string;
-  readonly sessionImportRunningUnknown: string;
   readonly sessionImportRunningHint: string;
   readonly sessionImportAction: string;
   readonly sessionImportImporting: string;
@@ -67,13 +107,10 @@ export interface RendererSettingsMessages {
   readonly accountColumnAccount: string;
   readonly accountConnected: string;
   readonly accountDefaultBadge: string;
-  readonly accountColumnActions: string;
   readonly accountSearch: string;
   readonly accountEmpty: string;
   readonly accountNoMatches: string;
-  readonly accountNativeManaged: string;
   readonly accountNativeManagementHint: string;
-  readonly accountDetailsClose: string;
   readonly accountDefaultHint: string;
   readonly accountCreditsRemaining: string;
   readonly accountCreditsLoading: string;
@@ -126,6 +163,18 @@ export interface RendererSettingsMessages {
   readonly connectionStatus: string;
   readonly connectionHostsScrollLeft: string;
   readonly connectionHostsScrollRight: string;
+  readonly launchPathLabel: string;
+  readonly launchPathPlaceholder: string;
+  readonly launchPathWorkbuddyHelp: string;
+  readonly launchPathSave: string;
+  readonly launchPathReset: string;
+  readonly launchPathRestart: string;
+  readonly launchPathSaved: string;
+  readonly launchPathAutomatic: string;
+  readonly launchPathSaving: string;
+  readonly launchPathLoading: string;
+  readonly launchPathLoadError: string;
+  readonly launchPathSaveError: string;
   readonly connectionOpenInstallation: string;
   readonly connectionOpenHarnessWeb: string;
   readonly connectionInstall: string;
@@ -192,6 +241,7 @@ export interface RendererSettingsMessages {
 }
 
 const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
+  credentialImports: credentialImportEnglish,
   locale: "en",
   title: "Settings",
   close: "Close settings",
@@ -199,10 +249,55 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   sectionsLabel: "Settings sections",
   generalSection: "General",
   otherSection: "Other",
-  appearanceDescription: "Adjust how thinking text is displayed in the conversation.",
+  appearanceDescription: "Conversation display and local resource management.",
+  appearanceGroup: "Appearance",
+  loadedSessions: {
+    title: "Loaded sessions",
+    description:
+      "Local external Harnesses only. Refreshes every 10 seconds without waking sessions or resetting activity. Released sessions disappear from this list.",
+    columns: ["Session", "Harness", "State", "Since last activity", "Release constraint"],
+    empty: "No loaded external sessions.",
+    failed: "Could not load session status.",
+    unavailable: "Local Host does not support session status or is unavailable.",
+    loading: "Loading session status…",
+    minutes: "{minutes} min",
+    states: {
+      idle: "Idle",
+      running: "Running",
+      busy: "Busy",
+      closing: "Releasing",
+      failed: "Release failed",
+      blocked: "Blocked",
+    },
+    reasons: {
+      none: "—",
+      disabled: "Automatic release is off",
+      timeout: "Timeout not reached",
+      operation: "Turn or Host operation in progress",
+      background: "Subagent, steering, command or interaction pending",
+      identity: "Session identity unavailable or snapshot-only session",
+      persistence: "Persistence or output error",
+      closeFailed: "Restart Desktop before retrying",
+    },
+  },
+  idleReleaseSection: "Resource management",
+  idleReleaseTitle: "Release idle sessions",
+  idleReleaseDescription:
+    "Close background instances after the idle timeout; they resume on next use.",
+  idleReleaseHelpLabel: "About releasing idle sessions",
+  idleReleaseHelp: Object.freeze([
+    "After an Agent finishes replying, its background process may continue running and using memory. Keeping more sessions open may increase resource usage.",
+    "When enabled, codexhost periodically checks sessions and closes background instances once the idle timeout is reached and no tasks or interactions are pending, reducing resource usage. Chat history is not deleted. Opening the session again or sending a message restarts the process.",
+  ]),
+  idleReleaseTimeout: "Idle timeout",
+  idleReleaseTimeoutDescription: "5–1440 minutes.",
+  idleReleaseMinutes: "min",
+  idleReleaseInvalid: "Enter a whole number from 5 to 1440.",
+  idleReleasePending: "Syncing…",
+  idleReleaseUnavailable: "Not supported by this Host",
+  idleReleaseFailed: "Sync failed, try again",
   reasoningSoftWrapTitle: "Wrap thinking text",
-  reasoningSoftWrapDescription:
-    "Wrap long thinking lines in the transcript. Ordinary shell output is unaffected. Off by default.",
+  reasoningSoftWrapDescription: "Wrap long lines in thinking blocks. Shell output is unaffected.",
   pageUnavailable: "Page unavailable",
   inDevelopment: "In development",
   notAvailable: "Not available",
@@ -231,7 +326,6 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportUpdatedAt: "Updated",
   sessionImportSessionId: "Session ID",
   sessionImportRunning: "Running",
-  sessionImportRunningUnknown: "Activity unknown",
   sessionImportRunningHint:
     "Close this session in its native client before importing, then refresh.",
   sessionImportAction: "Import and open",
@@ -249,15 +343,12 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountConnected: "Accounts",
   accountDefaultBadge: "Current",
   accountColumnAccount: "Account",
-  accountColumnActions: "Manage",
   accountSearch: "Search accounts or Agents…",
   accountEmpty:
     "No current identities found. Sign in through Codex Desktop or your Harness's native client.",
   accountNoMatches: "No matching accounts.",
-  accountNativeManaged: "Native management",
   accountNativeManagementHint:
     "This account comes from {harness}'s native authentication. This page only displays identity and limits; manage sign-in, sign-out and switching in the native client.",
-  accountDetailsClose: "Close account details",
   accountDefaultHint: "This is the current identity for all Codex Threads.",
   accountCreditsRemaining: "Remaining",
   accountCreditsLoading: "Loading limits…",
@@ -310,11 +401,25 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionStatus: "Status",
   connectionHostsScrollLeft: "Show previous Hosts",
   connectionHostsScrollRight: "Show more Hosts",
-  connectionOpenInstallation: "Open official installation page",
+  launchPathLabel: "Installed application path",
+  launchPathPlaceholder: "Installation folder, e.g. D:\\program\\WorkBuddy",
+  launchPathWorkbuddyHelp:
+    "This integration requires the WorkBuddy app. If it is not detected automatically, enter its installation folder. codexhost locates the required files inside it. Restart codexhost after saving to apply.",
+  launchPathSave: "Save path",
+  launchPathReset: "Clear override",
+  launchPathRestart: "Saved. Restart codexhost to apply; running sessions are unchanged.",
+  launchPathSaved: "This Host is using the saved override. Availability is checked separately.",
+  launchPathAutomatic:
+    "No saved override. Uses environment configuration, then automatic discovery.",
+  launchPathSaving: "Saving…",
+  launchPathLoading: "Loading launch settings…",
+  launchPathLoadError: "Could not load launch settings. Reopen this detail panel to retry.",
+  launchPathSaveError:
+    "Could not save. Enter an existing absolute installation folder on this Host and check configuration permissions.",
+  connectionOpenInstallation: "Show installation instructions",
   connectionOpenHarnessWeb: "Open DeepSeek Harness Web",
   connectionInstall: "Install",
-  connectionInstallDescription:
-    "This Harness was not detected. Follow its official installation guide, then return here and run the check again.",
+  connectionInstallDescription: "This Harness was not detected.",
   connectionErrorTitle: "Connection check failed",
   connectionErrorLog: "Error log",
   connectionOpenIssue: "Open GitHub Issue",
@@ -385,7 +490,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutRepository: "Open-source repository",
   pageLabels: Object.freeze({
     connections: "Connections",
-    appearance: "Appearance",
+    appearance: "General",
     accounts: "Accounts",
     "session-import": "Session Import",
     updates: "Updates",
@@ -394,6 +499,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
 });
 
 const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
+  credentialImports: credentialImportChinese,
   locale: "zh-CN",
   title: "设置",
   close: "关闭设置",
@@ -401,9 +507,54 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   sectionsLabel: "设置分类",
   generalSection: "通用",
   otherSection: "其他",
-  appearanceDescription: "调整会话中思考文本的显示方式。",
+  appearanceDescription: "会话显示与本地资源管理。",
+  appearanceGroup: "外观",
+  loadedSessions: {
+    title: "已加载会话",
+    description:
+      "仅显示本地外部 Harness。每 10 秒刷新，不唤醒会话、不重置活动时间。释放后的会话从列表移除。",
+    columns: ["会话", "Harness", "状态", "距最后活动", "暂不能释放的原因"],
+    empty: "暂无已加载的外部会话。",
+    failed: "无法加载会话状态。",
+    unavailable: "本地 Host 不支持会话状态查询或当前不可用。",
+    loading: "正在加载会话状态…",
+    minutes: "{minutes} 分钟",
+    states: {
+      idle: "空闲",
+      running: "执行中",
+      busy: "忙碌",
+      closing: "释放中",
+      failed: "释放失败",
+      blocked: "不可释放",
+    },
+    reasons: {
+      none: "—",
+      disabled: "自动释放已关闭",
+      timeout: "尚未达到超时",
+      operation: "任务或 Host 操作尚未结束",
+      background: "存在子任务、转向、命令或待处理交互",
+      identity: "缺少可恢复身份或仅有快照",
+      persistence: "持久化或输出异常",
+      closeFailed: "需重启 Desktop 后重试",
+    },
+  },
+  idleReleaseSection: "资源管理",
+  idleReleaseTitle: "自动释放空闲会话",
+  idleReleaseDescription: "空闲超时后关闭后台实例，再次使用时自动恢复。",
+  idleReleaseHelpLabel: "自动释放空闲会话说明",
+  idleReleaseHelp: Object.freeze([
+    "Agent 回复结束后，后台进程可能仍在运行并占用内存。打开的会话越多，资源占用可能越大。",
+    "开启后，codexhost 会定期检查，在会话空闲达到设定时间、且没有任务或待处理交互时，自动关闭后台实例，减少资源占用。聊天记录不会删除，再次打开或发送消息时会重新启动该进程。",
+  ]),
+  idleReleaseTimeout: "空闲超时",
+  idleReleaseTimeoutDescription: "5～1440 分钟。",
+  idleReleaseMinutes: "分钟",
+  idleReleaseInvalid: "请输入 5～1440 之间的整数。",
+  idleReleasePending: "同步中…",
+  idleReleaseUnavailable: "当前 Host 不支持",
+  idleReleaseFailed: "同步失败，请重试",
   reasoningSoftWrapTitle: "换行显示思考文本",
-  reasoningSoftWrapDescription: "让思考块中的长行自动换行。普通 Shell 输出不受影响。默认关闭。",
+  reasoningSoftWrapDescription: "思考块中的长行自动换行，不影响 Shell 输出。",
   pageUnavailable: "页面不可用",
   inDevelopment: "开发中",
   notAvailable: "暂不可用",
@@ -431,7 +582,6 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportUpdatedAt: "更新时间",
   sessionImportSessionId: "会话 ID",
   sessionImportRunning: "运行中",
-  sessionImportRunningUnknown: "运行状态未知",
   sessionImportRunningHint: "请先在原生客户端关闭该会话，再刷新并导入。",
   sessionImportAction: "导入并打开",
   sessionImportImporting: "正在导入……",
@@ -446,14 +596,11 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountConnected: "账号",
   accountDefaultBadge: "当前",
   accountColumnAccount: "账号",
-  accountColumnActions: "管理",
   accountSearch: "搜索账号或 Agent…",
   accountEmpty: "尚未识别到当前身份，请在 Codex Desktop 或对应 Harness 的原生客户端登录。",
   accountNoMatches: "没有匹配的账号。",
-  accountNativeManaged: "原生管理",
   accountNativeManagementHint:
     "此账号来自 {harness} 的原生登录。这里只读展示身份与额度；登录、退出和切换请在其原生客户端中完成。",
-  accountDetailsClose: "关闭账号详情",
   accountDefaultHint: "所有 Codex 会话当前使用此身份。",
   accountCreditsRemaining: "剩余",
   accountCreditsLoading: "正在读取额度…",
@@ -506,11 +653,23 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionStatus: "状态",
   connectionHostsScrollLeft: "查看前面的 Host",
   connectionHostsScrollRight: "查看更多 Host",
-  connectionOpenInstallation: "前往官方安装页面",
+  launchPathLabel: "应用安装路径",
+  launchPathPlaceholder: "填写安装目录，例如 D:\\program\\WorkBuddy",
+  launchPathWorkbuddyHelp:
+    "此接入依赖 WorkBuddy 应用。若未自动识别，请填写应用安装目录，codexhost 会自动定位所需文件。保存后重启 codexhost 生效。",
+  launchPathSave: "保存路径",
+  launchPathReset: "清除自定义路径",
+  launchPathRestart: "已保存，重启 codexhost 后生效；当前运行中的会话不受影响。",
+  launchPathSaved: "此 Host 正在使用已保存的路径；是否可用仍以连接检测结果为准。",
+  launchPathAutomatic: "未设置自定义路径，使用环境变量配置或自动发现。",
+  launchPathSaving: "正在保存…",
+  launchPathLoading: "正在读取启动设置…",
+  launchPathLoadError: "无法读取启动设置，请重新打开此详情面板重试。",
+  launchPathSaveError: "保存失败。请填写此 Host 上实际存在的安装目录绝对路径，并确认配置目录可写。",
+  connectionOpenInstallation: "查看安装指引",
   connectionOpenHarnessWeb: "打开 DeepSeek Harness Web",
   connectionInstall: "安装",
-  connectionInstallDescription:
-    "尚未检测到该 Harness。请按照官方安装指南完成安装，然后返回此页面重新检查。",
+  connectionInstallDescription: "尚未检测到该 Harness。",
   connectionErrorTitle: "连接检查失败",
   connectionErrorLog: "错误日志",
   connectionOpenIssue: "提交 GitHub Issue",
@@ -579,7 +738,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutRepository: "开源仓库",
   pageLabels: Object.freeze({
     connections: "连接",
-    appearance: "外观",
+    appearance: "通用",
     accounts: "账号",
     "session-import": "会话导入",
     updates: "更新",

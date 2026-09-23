@@ -5,17 +5,13 @@ import {
   installRendererDraftPrewarmPolicy,
   installRendererDraftPrewarmPolicyDirect,
   requestManagerFromHookState,
-  selectRendererRequestManager,
 } from "../src/renderer-draft-prewarm-policy.js";
 import {
-  installDraftPrewarmPolicyBridge,
-  installDraftPrewarmPolicyInRenderer,
   type DraftPrewarmPolicyTarget,
-  type RendererDebugger,
   type RendererHostRequestBridge,
   type RendererHostRequestManager,
-  type RendererWebContents,
 } from "../src/renderer-draft-prewarm-runtime.js";
+import { installDraftPrewarmPolicyBridge } from "./renderer-draft-prewarm-fixture.js";
 
 function requestManagerFixture(): RendererHostRequestManager {
   return {
@@ -161,127 +157,7 @@ function writtenBridgeFrames(directSend: ReturnType<typeof vi.fn>): Record<strin
     });
 }
 
-function rendererFixture(
-  options: {
-    candidateCount?: number;
-    hostId?: string;
-    includePrewarmedThreadManager?: boolean;
-  } = {},
-): {
-  contents: RendererWebContents;
-  sendCommand: ReturnType<typeof vi.fn>;
-  attach: ReturnType<typeof vi.fn>;
-  detach: ReturnType<typeof vi.fn>;
-} {
-  let attached = false;
-  const attach = vi.fn(() => {
-    attached = true;
-  });
-  const detach = vi.fn(() => {
-    attached = false;
-  });
-  const sendCommand = vi.fn(
-    async (method: string, parameters: Record<string, unknown> = {}): Promise<unknown> => {
-      if (method === "Runtime.enable") return {};
-      if (method === "Runtime.evaluate") return { result: { objectId: "manager-result" } };
-      if (method === "Runtime.getProperties") {
-        switch (parameters.objectId) {
-          case "manager-result":
-            return {
-              result: [
-                { name: "candidateCount", value: { value: options.candidateCount ?? 1 } },
-                { name: "hostId", value: { value: options.hostId ?? "local" } },
-                { name: "manager", value: { objectId: "outer-request-manager" } },
-                { name: "requestClient", value: { objectId: "request-client" } },
-                ...(options.includePrewarmedThreadManager === false
-                  ? []
-                  : [
-                      {
-                        name: "prewarmedThreadManager",
-                        value: { objectId: "prewarm-manager" },
-                      },
-                    ]),
-              ],
-            };
-          default:
-            throw new Error(`Unexpected Runtime.getProperties object: ${parameters.objectId}`);
-        }
-      }
-      if (method === "Runtime.callFunctionOn") {
-        return { result: { value: { state: "ready", reason: "owned-request-bridge" } } };
-      }
-      throw new Error(`Unexpected CDP command: ${method}`);
-    },
-  );
-  const debugger_: RendererDebugger = {
-    isAttached: () => attached,
-    attach,
-    detach,
-    sendCommand,
-  };
-  return {
-    contents: {
-      isDestroyed: () => false,
-      getType: () => "window",
-      debugger: debugger_,
-    },
-    sendCommand,
-    attach,
-    detach,
-  };
-}
-
 describe("Renderer draft prewarm policy", () => {
-  it("selects the request manager owned by the active remote Composer Host", () => {
-    const localManager = {};
-    const remoteManager = {};
-    const local = {
-      manager: localManager,
-      requestClient: { hostId: "local" },
-      hostId: "local",
-      prewarmedThreadManager: null,
-    };
-    const remote = {
-      manager: remoteManager,
-      requestClient: { hostId: "remote-ssh-discovered:mac" },
-      hostId: "remote-ssh-discovered:mac",
-      prewarmedThreadManager: {},
-    };
-
-    expect(
-      selectRendererRequestManager(
-        [local, remote, { ...remote, requestClient: remote.requestClient }],
-        ["remote-ssh-discovered:mac", "remote-ssh-discovered:mac"],
-      ),
-    ).toEqual(remote);
-  });
-
-  it("fails closed when the active Composer exposes conflicting Hosts", () => {
-    expect(
-      selectRendererRequestManager(
-        [
-          {
-            manager: {},
-            requestClient: {},
-            hostId: "remote-ssh-discovered:mac",
-            prewarmedThreadManager: null,
-          },
-        ],
-        ["local", "remote-ssh-discovered:mac"],
-      ),
-    ).toBeNull();
-  });
-
-  it("retains the single-manager fallback when the Composer has no Host markers", () => {
-    const candidate = {
-      manager: {},
-      requestClient: {},
-      hostId: "local",
-      prewarmedThreadManager: null,
-    };
-    expect(selectRendererRequestManager([candidate], [])).toBe(candidate);
-  });
-
   it("recognizes a Fiber hook state that is already the request manager", () => {
     const manager = fiberRequestManagerFixture();
     expect(requestManagerFromHookState(manager)).toBe(manager);
@@ -319,31 +195,6 @@ describe("Renderer draft prewarm policy", () => {
     ).toBeNull();
   });
 
-  it("generates syntactically valid main-process code", async () => {
-    const evaluate = vi.fn(async (expression: string): Promise<unknown> => {
-      expect(() => new Function(`return ${expression}`)).not.toThrow();
-      return { state: "ready", reason: "owned-request-bridge" };
-    });
-    const inspector = {
-      async evaluate<T>(expression: string): Promise<T> {
-        return (await evaluate(expression)) as T;
-      },
-    };
-
-    await expect(installRendererDraftPrewarmPolicy(inspector, 17)).resolves.toEqual({
-      state: "ready",
-      reason: "owned-request-bridge",
-    });
-    expect(evaluate).toHaveBeenCalledOnce();
-    const expression = evaluate.mock.calls[0]?.[0] ?? "";
-    expect(expression).toContain("webContents.fromId(17)");
-    expect(expression).toContain("value.requestClient.enqueueRequest");
-    expect(expression).toContain("value.prewarmedThreadManager?.discardAllPrewarmedThreads");
-    expect(expression).toContain("matchesRequestManager(value.manager)");
-    expect(expression).toContain("executionTargetHostId");
-    expect(expression).toContain("permissionsHostId");
-  });
-
   it("retries while the current Renderer request manager is mounting", async () => {
     const evaluate = vi
       .fn<() => Promise<unknown>>()
@@ -360,79 +211,6 @@ describe("Renderer draft prewarm policy", () => {
       reason: "owned-request-bridge",
     });
     expect(evaluate).toHaveBeenCalledTimes(2);
-  });
-
-  it("installs the fixed policy on the uniquely owned Host request bridge", async () => {
-    const fixture = rendererFixture();
-
-    await expect(
-      installDraftPrewarmPolicyInRenderer(
-        fixture.contents,
-        "synthetic-manager-expression",
-        "function syntheticPolicy() {}",
-      ),
-    ).resolves.toEqual({ state: "ready", reason: "owned-request-bridge" });
-
-    expect(fixture.attach).toHaveBeenCalledWith("1.3");
-    expect(fixture.detach).toHaveBeenCalledOnce();
-    expect(fixture.sendCommand).toHaveBeenCalledWith("Runtime.evaluate", {
-      expression: "synthetic-manager-expression",
-    });
-    expect(fixture.sendCommand).toHaveBeenCalledWith(
-      "Runtime.callFunctionOn",
-      expect.objectContaining({
-        objectId: "outer-request-manager",
-        functionDeclaration: "function syntheticPolicy() {}",
-        arguments: [
-          { objectId: "request-client" },
-          { value: "local" },
-          { objectId: "prewarm-manager" },
-        ],
-      }),
-    );
-  });
-
-  it("installs the fixed policy on a uniquely owned remote Host request bridge", async () => {
-    const fixture = rendererFixture({ hostId: "remote-ssh-discovered:mac" });
-
-    await expect(
-      installDraftPrewarmPolicyInRenderer(
-        fixture.contents,
-        "synthetic-manager-expression",
-        "function syntheticPolicy() {}",
-      ),
-    ).resolves.toEqual({ state: "ready", reason: "owned-request-bridge" });
-
-    expect(fixture.sendCommand).toHaveBeenCalledWith(
-      "Runtime.callFunctionOn",
-      expect.objectContaining({
-        objectId: "outer-request-manager",
-        arguments: [
-          { objectId: "request-client" },
-          { value: "remote-ssh-discovered:mac" },
-          { objectId: "prewarm-manager" },
-        ],
-      }),
-    );
-  });
-
-  it.each([
-    [{ candidateCount: 2 }, "request manager is ambiguous"],
-    [{ hostId: "" }, "request manager is ambiguous"],
-    [{ includePrewarmedThreadManager: false }, "prewarmed Thread manager is unavailable"],
-  ] as const)("fails closed for an unsupported request bridge", async (options, error) => {
-    const fixture = rendererFixture(options);
-
-    await expect(
-      installDraftPrewarmPolicyInRenderer(fixture.contents, "manager", "policy"),
-    ).rejects.toThrow(error);
-    expect(fixture.detach).toHaveBeenCalledOnce();
-  });
-
-  it("rejects an unavailable owned Renderer before attaching", async () => {
-    await expect(installDraftPrewarmPolicyInRenderer(null, "manager", "policy")).rejects.toThrow(
-      "Owned Renderer is unavailable",
-    );
   });
 
   it("clears drafts through the current prewarmed Thread manager", async () => {
@@ -545,6 +323,45 @@ describe("Renderer draft prewarm policy", () => {
       ephemeral: true,
       model: "gpt-5",
     });
+  });
+
+  it("rejects an in-flight prewarm after the selected Harness changes", async () => {
+    const stalePrewarm = Promise.withResolvers<unknown>();
+    const prewarmThreadStart = vi
+      .fn<(parameters: unknown) => Promise<unknown>>()
+      .mockImplementationOnce(() => stalePrewarm.promise)
+      .mockImplementationOnce(async (parameters) => parameters);
+    const manager = requestManagerFixture();
+    const bridge = requestBridgeFixture({ prewarmThreadStart });
+    const discardAllPrewarmedThreads = vi.fn();
+    const target: DraftPrewarmPolicyTarget = {};
+    installDraftPrewarmPolicyBridge(manager, bridge, "local", target, {
+      discardAllPrewarmedThreads,
+    });
+    const policy = target.__codexhostDraftPrewarmPolicyV1 as {
+      select(model: string | null): boolean;
+      clear(): Promise<void>;
+    };
+
+    policy.select("codexhost/pi-native");
+    const pendingPi = bridge.prewarmThreadStart({ model: "native-model" }) as Promise<unknown>;
+    policy.select("codexhost/claude-code-native");
+    await policy.clear();
+    stalePrewarm.resolve({ thread: { id: "stale-pi" } });
+
+    await expect(pendingPi).rejects.toThrow(
+      "Renderer draft prewarm was invalidated by a configuration change",
+    );
+    await expect(bridge.prewarmThreadStart({ model: "native-model" })).resolves.toEqual({
+      model: "codexhost/claude-code-native",
+    });
+    expect(prewarmThreadStart).toHaveBeenNthCalledWith(1, {
+      model: "codexhost/pi-native",
+    });
+    expect(prewarmThreadStart).toHaveBeenNthCalledWith(2, {
+      model: "codexhost/claude-code-native",
+    });
+    expect(discardAllPrewarmedThreads).toHaveBeenCalledOnce();
   });
 
   it("tunnels private Host requests through the stock Remote Control app-server", async () => {
@@ -784,6 +601,65 @@ describe("Renderer draft prewarm policy", () => {
     expect(writtenBridgeFrames(directSend)).toHaveLength(3);
   });
 
+  it.each(["thread/read", "thread/resume"] as const)(
+    "falls back to the stock app-server for native recovery after the POSIX bridge rejection: %s",
+    async (method) => {
+      const manager = requestManagerFixture();
+      const { bridge, directSend } = remoteRequestBridgeFixture();
+      const posixError = Object.assign(
+        new Error("Invalid request: AbsolutePathBuf deserialized without a base path"),
+        { code: -32600 },
+      );
+      directSend.mockImplementation((requestedMethod: string) =>
+        requestedMethod === "process/spawn"
+          ? Promise.reject(posixError)
+          : Promise.resolve({ thread: { id: "native-posix-thread" } }),
+      );
+      installDraftPrewarmPolicyBridge(
+        manager,
+        bridge,
+        "remote-control:fixture-host",
+        {},
+        {
+          discardAllPrewarmedThreads: vi.fn(),
+        },
+      );
+
+      await expect(
+        bridge.sendRequest(method, { threadId: "native-posix-thread" }),
+      ).resolves.toEqual({
+        thread: { id: "native-posix-thread" },
+      });
+      expect(directSend).toHaveBeenNthCalledWith(2, method, { threadId: "native-posix-thread" });
+    },
+  );
+
+  it("does not fall back after an unrelated Remote Control bridge failure", async () => {
+    const manager = requestManagerFixture();
+    const { bridge, directSend } = remoteRequestBridgeFixture();
+    const unrelatedError = Object.assign(
+      new Error("transport: AbsolutePathBuf deserialized without a base path"),
+      { code: -1 },
+    );
+    directSend.mockImplementation((method: string) =>
+      method === "process/spawn" ? Promise.reject(unrelatedError) : Promise.resolve({}),
+    );
+    installDraftPrewarmPolicyBridge(
+      manager,
+      bridge,
+      "remote-control:fixture-host",
+      {},
+      {
+        discardAllPrewarmedThreads: vi.fn(),
+      },
+    );
+
+    await expect(bridge.sendRequest("thread/read", { threadId: "unknown-thread" })).rejects.toThrow(
+      "transport: AbsolutePathBuf deserialized without a base path",
+    );
+    expect(directSend).not.toHaveBeenCalledWith("thread/read", { threadId: "unknown-thread" });
+  });
+
   it("leaves stock Remote Control requests direct and terminates its bridge on dispose", async () => {
     const manager = requestManagerFixture();
     const { bridge, directSend } = remoteRequestBridgeFixture();
@@ -980,6 +856,104 @@ describe("Renderer draft prewarm policy", () => {
     }
   });
 
+  it.each([1, 2])(
+    "installs the active Remote SSH registry with %i editors",
+    async (editorCount) => {
+      const remoteHostId = "remote-ssh-codex-managed:fixture";
+      const localManager = fiberRequestManagerFixture();
+      const remoteManager = {
+        ...fiberRequestManagerFixture(),
+        getHostId: () => remoteHostId,
+      };
+      const getForHostId = vi.fn(function (this: unknown, hostId: string) {
+        expect(this).toBe(registry);
+        return hostId === remoteHostId ? remoteManager : null;
+      });
+      const registry = {
+        addManager: vi.fn(),
+        getForHostId,
+        waitForManagerForHostId: vi.fn(),
+      };
+      const fiber = {
+        memoizedProps: {
+          executionTargetHostId: remoteHostId,
+          permissionsHostId: remoteHostId,
+        },
+        memoizedState: {
+          memoizedState: registry,
+          next: { memoizedState: localManager, next: null },
+        },
+        return: null,
+      };
+      const editor = { __reactFiber$fixture: fiber, parentElement: null };
+      const editors = Array.from({ length: editorCount }, () => ({ ...editor }));
+      const document = { querySelectorAll: () => editors };
+      const target: Record<string, unknown> = {};
+      const renderer = {
+        async evaluate<T>(expression: string): Promise<T> {
+          try {
+            const run = new Function("document", "window", `return ${expression}`);
+            return (await run(document, target)) as T;
+          } catch (error) {
+            throw new Error("Renderer discovery evaluation failed", { cause: error });
+          }
+        },
+      };
+
+      await expect(installRendererDraftPrewarmPolicyDirect(renderer)).resolves.toEqual({
+        state: "ready",
+        reason: "owned-request-bridge",
+      });
+
+      expect(getForHostId).toHaveBeenCalledOnce();
+      expect(getForHostId).toHaveBeenCalledWith(remoteHostId);
+      const policy = target.__codexhostDraftPrewarmPolicyV1 as {
+        requestTarget(): object;
+        owns(
+          manager: object,
+          requestClient: object,
+          hostId: string,
+          prewarmedThreadManager: object,
+          requiresCurrentManager: boolean,
+        ): boolean;
+        dispose(): void;
+      };
+      expect(
+        policy.owns(
+          remoteManager,
+          remoteManager.requestClient,
+          remoteHostId,
+          remoteManager.prewarmedThreadManager,
+          true,
+        ),
+      ).toBe(true);
+      try {
+        expect(policy.requestTarget()).toBe(remoteManager);
+        getForHostId.mockReturnValueOnce(null);
+        expect(() => policy.requestTarget()).toThrow("Renderer request manager is retired");
+        expect(policy.requestTarget()).toBe(remoteManager);
+
+        // Conflicting Composer identity must not retire an independently owned Host.
+        getForHostId.mockClear();
+        editors.push({
+          ...editor,
+          __reactFiber$fixture: {
+            ...fiber,
+            memoizedProps: { executionTargetHostId: "local", permissionsHostId: "local" },
+          },
+        });
+        expect(policy.requestTarget()).toBe(remoteManager);
+        const routing = target.__codexhostHostRoutingV1 as { forComposer(): unknown };
+        expect(routing.forComposer()).toBeNull();
+        expect(getForHostId).toHaveBeenCalledWith(remoteHostId);
+        editors.pop();
+        expect(policy.requestTarget()).toBe(remoteManager);
+      } finally {
+        policy.dispose();
+      }
+    },
+  );
+
   it("publishes the committed manager rather than pinning a retired DOM Fiber in requestTarget", async () => {
     const retired = { ...requestManagerFixture(), ...fiberRequestManagerFixture() };
     const active = { ...requestManagerFixture(), ...fiberRequestManagerFixture() };
@@ -1071,6 +1045,58 @@ describe("Renderer draft prewarm policy", () => {
     policy.dispose();
   });
 
+  it("keeps the shared request manager current while side chat opens and closes", async () => {
+    const active = { ...requestManagerFixture(), ...fiberRequestManagerFixture() };
+    const editorFor = (manager: typeof active) => ({
+      parentElement: null,
+      __reactFiber$test: {
+        memoizedProps: { executionTargetHostId: manager.getHostId() },
+        memoizedState: { memoizedState: { manager } },
+      },
+    });
+    const mainEditor = editorFor(active);
+    const editors = [mainEditor];
+    const target: DraftPrewarmPolicyTarget = {};
+    const renderer = {
+      async evaluate<T>(expression: string): Promise<T> {
+        return await runInNewContext(expression, {
+          document: { querySelectorAll: () => editors },
+          window: target,
+          crypto: globalThis.crypto,
+          TextDecoder,
+          TextEncoder,
+          Uint8Array,
+          setTimeout,
+          clearTimeout,
+        });
+      },
+    };
+    await installRendererDraftPrewarmPolicyDirect(renderer);
+    const policy = target.__codexhostDraftPrewarmPolicyV1 as {
+      requestTarget(): object;
+      dispose(): void;
+    };
+    try {
+      editors.push(editorFor(active));
+      expect(policy.requestTarget()).toBe(active);
+      await installRendererDraftPrewarmPolicyDirect(renderer);
+      expect(target.__codexhostDraftPrewarmPolicyV1).toBe(policy);
+
+      // A genuinely different manager or Host must still invalidate the route.
+      const other = { ...requestManagerFixture(), ...fiberRequestManagerFixture() };
+      editors[1] = editorFor(other);
+      expect(() => policy.requestTarget()).toThrow("Renderer request manager is retired");
+      other.getHostId = () => "remote-host";
+      editors[1] = editorFor(other);
+      expect(policy.requestTarget()).toBe(active);
+
+      editors.pop();
+      expect(policy.requestTarget()).toBe(active);
+    } finally {
+      policy.dispose();
+    }
+  });
+
   it("installs the owned request bridge through direct Renderer evaluation", async () => {
     const evaluate = vi.fn(async (expression: string): Promise<unknown> => {
       void expression;
@@ -1090,8 +1116,8 @@ describe("Renderer draft prewarm policy", () => {
       reason: "owned-request-bridge",
     });
     const expression = evaluate.mock.calls[0]?.[0];
-    expect(expression).toContain("document.querySelectorAll");
-    expect(expression).toContain("installDraftPrewarmPolicyBridge");
+    expect(expression).toContain("discoverRendererHosts");
+    expect(expression).toContain("installRendererHostRouting");
     expect(expression).not.toContain("webContents.fromId");
   });
 

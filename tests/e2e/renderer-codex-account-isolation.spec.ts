@@ -2,6 +2,8 @@ import { expect, test, type Page } from "@playwright/test";
 import { build } from "esbuild";
 import path from "node:path";
 
+import { tailwindEsbuildPlugin } from "../../packages/renderer-extension/scripts/tailwind-esbuild-plugin.mjs";
+
 const browserExecutable = process.env.CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH;
 if (browserExecutable) test.use({ launchOptions: { executablePath: browserExecutable } });
 
@@ -88,11 +90,12 @@ const { outputFiles } = await build({
       facade.clientForHost = (host) => clients[host];
       const installPolicy = () => {
         const owner = hostId;
-        window.__codexhostDraftPrewarmPolicyV1 = {
+        const policy = {
           state: "ready", hostId: owner,
           select: () => true,
           clear: () => request(owner, "clear", () => undefined),
         };
+        window.__codexhostHostRoutingV1 = { forComposer: () => routeReady ? { hostId: owner, policy } : null };
       };
       installPolicy();
       const composer = document.createElement("form");
@@ -181,6 +184,7 @@ const { outputFiles } = await build({
   platform: "browser",
   target: "es2024",
   loader: { ".css": "text", ".png": "dataurl", ".svg": "dataurl" },
+  plugins: [tailwindEsbuildPlugin()],
   write: false,
 });
 const browserBundle = outputFiles[0]?.text;

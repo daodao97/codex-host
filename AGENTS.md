@@ -45,7 +45,26 @@
 
 ## Coding Style & Naming Conventions
 
-- Follow `docs/领域术语表.md`; in particular, do not conflate Harness, Model, Provider, Account, or Billing Source.
+- Follow `docs/project/领域术语表.md`; in particular, do not conflate Harness, Model, Provider, Account, or Billing Source.
+
+## Repository Skills
+
+Use the applicable repository-local skills below when their task occurs; all ten support contextual invocation. Read the selected `SKILL.md` before using its workflow. Select by task rather than loading or executing every skill on every change. These guides supplement the ownership, scope, and validation rules in this file; copied examples do not establish installed tools or product capabilities.
+
+| Task | Skill |
+| --- | --- |
+| Production code changes and dependency boundaries | [architecture-governance](.agents/skills/architecture-governance/SKILL.md) |
+| Feature impact analysis, state ownership and implementation planning | [feature-boundary-planner](.agents/skills/feature-boundary-planner/SKILL.md) |
+| Export changes, reference tracing and code deletion | [dep-refs](.agents/skills/dep-refs/SKILL.md) |
+| React implementation and performance review | [react-best-practices](.agents/skills/react-best-practices/SKILL.md) |
+| AI chat components and conversation UI | [ai-elements](.agents/skills/ai-elements/SKILL.md) |
+| Browser interaction using the session's available tools | [control-browser](.agents/skills/control-browser/SKILL.md) |
+| Browser automation through the agent-browser CLI | [agent-browser](.agents/skills/agent-browser/SKILL.md) |
+| Electron application interaction and testing | [electron](.agents/skills/electron/SKILL.md) |
+| Exploratory application testing and issue reports | [dogfood](.agents/skills/dogfood/SKILL.md) |
+| GUI behavior and visual verification | [web-gui-tester](.agents/skills/web-gui-tester/SKILL.md) |
+
+Existing Harness integration and Desktop update audit skills remain applicable to their specialized tasks. Imported skill provenance and license information is in [.agents/skills/NOTICE.md](.agents/skills/NOTICE.md).
 
 ## Implementation Principles
 
@@ -70,6 +89,8 @@
 - Small, low-risk changes do not require tests. For high-risk or cross-package changes, or when explicitly requested, add focused tests for changed behavior and boundary conditions; do not run full test suites by default.
 - Do not claim a check passed unless it was executed. Report skipped or blocked checks and the reason.
 - A change is complete only when implementation, contracts, tests, and affected documentation agree.
+- For core logic or major feature changes, update the corresponding feature document in `docs/`, creating one only when needed. Describe current behavior and key constraints; prefer maintaining an existing document over adding a change report. Minor fixes and local refactors need no documentation changes.
+- Keep `docs/index.md` links and one-line descriptions current when adding, moving, or removing documents. Introduce feature-based subdirectories as navigation needs grow.
 
 ## Commit & Pull Request Guidelines
 
