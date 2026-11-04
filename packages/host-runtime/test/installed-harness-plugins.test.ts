@@ -1,7 +1,10 @@
 import path from "node:path";
+import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import { pathToFileURL } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
+import { harnessIdSchema } from "@codexhost/shared-contracts";
 import type { HarnessInspection } from "@codexhost/harness-adapter";
 import { warmup as warmupClaude } from "@codexhost/adapter-claude-code/plugin";
 import { warmup as warmupAntigravity } from "@codexhost/adapter-antigravity/plugin";
@@ -12,19 +15,24 @@ const sourceRuntimeUrl = pathToFileURL(path.resolve("packages/host-runtime/dist/
 const pluginRoot = path.resolve("packages/host-runtime/dist/plugins");
 const classes = {
   pi: "PiAdapter",
+  copilot: "CopilotAdapter",
   "claude-code": "ClaudeCodeAdapter",
   "deepseek-harness": "DeepSeekHarnessAdapter",
   opencode: "OpenCodeAdapter",
   grok: "GrokAdapter",
   omp: "OmpAdapter",
+  "qwen-code": "QwenCodeAdapter",
   antigravity: "AntigravityAdapter",
+  "kimi-code": "KimiAdapter",
   "kiro-cli": "KiroAdapter",
   codebuddy: "CodeBuddyAdapter",
   workbuddy: "WorkBuddyAdapter",
   "cursor-cli": "CursorAdapter",
+  devin: "DevinAdapter",
   hermes: "HermesAdapter",
   qoder: "QoderAdapter",
   "qoder-cn": "QoderAdapter",
+  zcode: "ZcodeAdapter",
 };
 
 const unavailable: HarnessInspection = {
@@ -77,7 +85,8 @@ describe("installed Harness composition", () => {
           .list()
           .map(({ id }) => id)
           .sort(),
-      ).toEqual(Object.keys(classes).sort());
+      ).toEqual([...Object.keys(classes), "codex-usage"].sort());
+      expect([...registry.usageAdapters.keys()]).toEqual(["codex-usage"]);
       for (const [id, adapter] of registry.adapters) {
         expect(adapter.harnessId).toBe(id);
         // esbuild may suffix class names when a plugin contains two protocol generations.
@@ -95,6 +104,7 @@ describe("installed Harness composition", () => {
 
   it("provides every built-in command catalog before inspection or Session creation", async () => {
     const expected = {
+      copilot: [],
       codebuddy: ["/compact", "/cost"],
       workbuddy: ["/compact", "/init"],
       "cursor-cli": ["/copy-request-id"],
@@ -104,6 +114,7 @@ describe("installed Harness composition", () => {
       opencode: ["/compact"],
       grok: ["/compact"],
       omp: ["/compact"],
+      "qwen-code": [],
       antigravity: [
         "/plan",
         "/goal",
@@ -122,9 +133,12 @@ describe("installed Harness composition", () => {
         "/kiro-spec",
         "/kiro-vibe",
       ],
+      "kimi-code": ["/compact", "/status", "/usage", "/mcp", "/tasks", "/help"],
+      devin: [],
       hermes: ["/help", "/tools", "/context", "/version", "/compress"],
       qoder: ["/compact"],
       "qoder-cn": ["/compact"],
+      zcode: ["/compact", "/goal"],
     };
     const registry = await load();
     try {
@@ -143,16 +157,19 @@ describe("installed Harness composition", () => {
   }, 35_000);
 
   it.each([
+    ["copilot", "CODEXHOST_COPILOT_COMMAND"],
     ["pi", "CODEXHOST_PI_COMMAND"],
     ["claude-code", "CODEXHOST_CLAUDE_COMMAND"],
     ["grok", "CODEXHOST_GROK_COMMAND"],
     ["opencode", "CODEXHOST_OPENCODE_COMMAND"],
     ["omp", "CODEXHOST_OMP_COMMAND"],
+    ["qwen-code", "CODEXHOST_QWEN_COMMAND"],
     ["antigravity", "CODEXHOST_ANTIGRAVITY_COMMAND"],
     ["kiro-cli", "CODEXHOST_KIRO_COMMAND"],
     ["codebuddy", "CODEXHOST_CODEBUDDY_COMMAND"],
     ["workbuddy", "CODEXHOST_WORKBUDDY_COMMAND"],
     ["cursor-cli", "CODEXHOST_CURSOR_COMMAND"],
+    ["devin", "CODEXHOST_DEVIN_COMMAND"],
     ["hermes", "CODEXHOST_HERMES_COMMAND"],
     ["qoder", "CODEXHOST_QODER_COMMAND"],
     ["qoder-cn", "CODEXHOST_QODERCN_COMMAND"],
@@ -207,7 +224,10 @@ describe("installed Harness composition", () => {
     try {
       for (const [id, adapter] of first.adapters) expect(adapter).not.toBe(second.adapters.get(id));
       await first.close();
-      expect(second.list()).toHaveLength(Object.keys(classes).length);
+      expect(second.list()).toHaveLength(Object.keys(classes).length + 1);
+      for (const [id, adapter] of first.usageAdapters) {
+        expect(adapter).not.toBe(second.usageAdapters.get(id));
+      }
     } finally {
       await Promise.all([first.close(), second.close()]);
     }
@@ -233,3 +253,52 @@ describe("installed Harness composition", () => {
     expect(remote.pluginContext.openLocalUrl).toBeUndefined();
   });
 });
+
+it.runIf(Boolean(process.env.CODEXHOST_OPENCODE_REAL_COMMAND))(
+  "loads the relocated OpenCode Bundle and opens a real isolated Session",
+  async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-opencode-plugin-"));
+    const plugins = path.join(root, "plugins");
+    let registry: Awaited<ReturnType<typeof loadHarnessPlugins>> | undefined;
+    try {
+      await cp(path.join(pluginRoot, "opencode"), path.join(plugins, "opencode"), {
+        recursive: true,
+      });
+      await writeFile(
+        path.join(plugins, "enabled.json"),
+        JSON.stringify({ version: 1, enabled: ["opencode"] }),
+      );
+      registry = await loadHarnessPlugins({
+        roots: [plugins],
+        warmup: false,
+        context: {
+          environment: {
+            ...process.env,
+            CODEXHOST_OPENCODE_COMMAND: process.env.CODEXHOST_OPENCODE_REAL_COMMAND,
+            OPENCODE_TEST_HOME: path.join(root, "home"),
+            OPENCODE_CONFIG_DIR: path.join(root, "config"),
+            OPENCODE_DISABLE_PROJECT_CONFIG: "true",
+            XDG_DATA_HOME: path.join(root, "data"),
+            XDG_CACHE_HOME: path.join(root, "cache"),
+            XDG_STATE_HOME: path.join(root, "state"),
+          },
+          platform: process.platform,
+          managedRemoteHost: false,
+        },
+      });
+      const adapter = registry.adapters.get(harnessIdSchema.parse("opencode"));
+      expect(adapter).toBeDefined();
+      if (!adapter) throw new Error("OpenCode plugin was not loaded");
+      expect(await adapter.inspect({ cwd: root })).toMatchObject({ status: "ready" });
+      const opened = await adapter.open({ kind: "create", cwd: root });
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(opened.value.initialState.nativeRef?.harnessId).toBe("opencode");
+      expect(await opened.value.readSnapshot()).toMatchObject({ ok: true, value: { turns: [] } });
+      await opened.value.close();
+    } finally {
+      await registry?.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+  45_000,
+);

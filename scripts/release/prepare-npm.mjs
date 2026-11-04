@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import {
   chmod,
   copyFile,
@@ -18,6 +19,7 @@ import {
   buildPreinstalledHarnessPlugins,
   preinstalledHarnessPluginPaths,
 } from "./harness-plugins.mjs";
+import { linuxGlibcCargoArguments, stripLinuxDebugInfo } from "./linux-glibc.mjs";
 import { hostReleaseTarget, npmReleaseUsage, releaseTargetForHost } from "./targets.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -39,6 +41,35 @@ export const NPM_RUNTIME_PLATFORM_PACKAGES = Object.freeze({
   "linux-x64": NPM_PLATFORM_PACKAGE_NAMES["linux-x64"],
   "linux-arm64": NPM_PLATFORM_PACKAGE_NAMES["linux-arm64"],
 });
+// Published packages keep the repository's minimum Node.js version but no upper
+// bound: newer host runtimes are accepted. Bundled plugins import node:sqlite,
+// which older Node.js releases do not provide.
+export function minimumNodeVersionFromEngines(range) {
+  const versions = [...String(range ?? "").matchAll(/>=\s*v?(\d+)\.(\d+)\.(\d+)/gu)].map((match) =>
+    match.slice(1, 4).map(Number),
+  );
+  if (versions.length === 0) throw new Error(`engines.node has no minimum version: ${range}`);
+  versions.sort((left, right) => left[0] - right[0] || left[1] - right[1] || left[2] - right[2]);
+  return versions[0].join(".");
+}
+
+export const NPM_MINIMUM_NODE_VERSION = minimumNodeVersionFromEngines(
+  JSON.parse(readFileSync(path.join(repositoryRoot, "package.json"), "utf8")).engines?.node,
+);
+// Node.js 23.x lacks parts of node:sqlite that bundled plugins import (the module is flagged
+// before 23.4.0 and sqlite.backup arrives in 23.8.0); the repository engines skip 23.x too.
+export const NPM_NODE_EXCLUDED_RANGE = Object.freeze({ from: "23.0.0", to: "24.0.0" });
+function compareNodeVersions(left, right) {
+  const a = left.split(".").map(Number);
+  const b = right.split(".").map(Number);
+  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+}
+export const NPM_NODE_ENGINE =
+  compareNodeVersions(NPM_MINIMUM_NODE_VERSION, NPM_NODE_EXCLUDED_RANGE.from) < 0
+    ? `>=${NPM_MINIMUM_NODE_VERSION} <${NPM_NODE_EXCLUDED_RANGE.from} || >=${NPM_NODE_EXCLUDED_RANGE.to}`
+    : `>=${compareNodeVersions(NPM_MINIMUM_NODE_VERSION, NPM_NODE_EXCLUDED_RANGE.to) < 0 ? NPM_NODE_EXCLUDED_RANGE.to : NPM_MINIMUM_NODE_VERSION}`;
+export const NPM_NODE_REQUIREMENT = `Node.js ${NPM_MINIMUM_NODE_VERSION} or later, except 23.x`;
+
 export const NPM_PACKAGE_DESCRIPTION =
   "Run Pi and Claude Code as first-class external harnesses inside Codex Desktop.";
 
@@ -49,6 +80,18 @@ export function npmPlatformPackageName(target) {
 }
 
 const runtimeLicenses = [
+  {
+    packageName: "@deepseek-ai/cordis",
+    license: "MIT",
+    source: "LICENSE",
+    output: "Cordis-LICENSE.txt",
+  },
+  {
+    packageName: "@deepseek-ai/cosmokit",
+    license: "MIT",
+    source: "LICENSE",
+    output: "Cosmokit-LICENSE.txt",
+  },
   {
     packageName: "@agentclientprotocol/sdk",
     license: "Apache-2.0",
@@ -74,6 +117,12 @@ const runtimeLicenses = [
     output: "MCP-SDK-LICENSE.txt",
   },
   {
+    packageName: "@opencode/client",
+    license: "MIT",
+    source: "scripts/release/licenses/opencode-client-2.0.16-MIT.txt",
+    output: "OpenCode-v2-Client-LICENSE.txt",
+  },
+  {
     packageName: "@opencode-ai/sdk",
     license: "MIT",
     source: "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt",
@@ -90,6 +139,12 @@ const runtimeLicenses = [
     license: "SEE LICENSE IN LICENSE",
     source: "LICENSE",
     output: "QoderCN-Agent-SDK-LICENSE.txt",
+  },
+  {
+    packageName: "@qwen-code/sdk",
+    license: "Apache-2.0",
+    source: "scripts/release/licenses/qwen-code-sdk-0.1.26-Apache-2.0.txt",
+    output: "Qwen-Code-SDK-LICENSE.txt",
   },
   { packageName: "diff", license: "BSD-3-Clause", source: "LICENSE", output: "diff-LICENSE.txt" },
   { packageName: "lucide", license: "ISC", source: "LICENSE", output: "lucide-LICENSE.txt" },
@@ -136,11 +191,11 @@ export function npmReleaseBuildCommands(
       label: "Rust release build",
       command: "cargo",
       args: [
-        "build",
+        ...(target.hostPlatform === "linux"
+          ? linuxGlibcCargoArguments(target.rustTarget)
+          : ["build", "--target", target.rustTarget]),
         "--release",
         "--locked",
-        "--target",
-        target.rustTarget,
         "--package",
         "codexhost-launcher",
         "--package",
@@ -224,6 +279,8 @@ export function expectedNpmPackagePaths(target) {
     ...(target.hostPlatform === "win32" ? ["libexec/codexhost-node-repl.exe"] : []),
     `libexec/codexhost-updater${target.executableSuffix}`,
     "app/codexhost-distribution.json",
+    "app/console-server.mjs",
+    "app/console-web.js",
     "app/desktop-controller.mjs",
     "app/host-runtime.mjs",
     "app/renderer-extension.js",
@@ -233,8 +290,12 @@ export function expectedNpmPackagePaths(target) {
     "licenses/Claude-Agent-SDK-LICENSE.md",
     "licenses/MCP-SDK-LICENSE.txt",
     "licenses/OpenCode-SDK-LICENSE.txt",
+    "licenses/OpenCode-v2-Client-LICENSE.txt",
     "licenses/Qoder-Agent-SDK-LICENSE.txt",
     "licenses/QoderCN-Agent-SDK-LICENSE.txt",
+    "licenses/Qwen-Code-SDK-LICENSE.txt",
+    "licenses/Cordis-LICENSE.txt",
+    "licenses/Cosmokit-LICENSE.txt",
     "licenses/diff-LICENSE.txt",
     "licenses/lucide-LICENSE.txt",
     "licenses/tailwindcss-LICENSE.txt",
@@ -259,7 +320,7 @@ export function createNpmPackageManifest({ version, target }) {
       "THIRD_PARTY_NOTICES.txt",
     ],
     engines: {
-      node: ">=22",
+      node: NPM_NODE_ENGINE,
     },
     os: npmPackageOs(target),
     cpu: npmPackageCpu(target),
@@ -281,14 +342,34 @@ export function createNpmPackageManifest({ version, target }) {
 export function createNpmBinLauncherSource({ version }) {
   return `#!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const version = ${JSON.stringify(version)};
+const minimumNodeVersion = ${JSON.stringify(NPM_MINIMUM_NODE_VERSION)};
+const excludedNodeRange = ${JSON.stringify(NPM_NODE_EXCLUDED_RANGE)};
 const userArguments = process.argv.slice(2);
+{
+  const compare = (left, right) => {
+    const a = left.split(".").map(Number);
+    const b = right.split(".").map(Number);
+    return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+  };
+  const current = process.versions.node;
+  if (
+    compare(current, minimumNodeVersion) < 0 ||
+    (compare(current, excludedNodeRange.from) >= 0 &&
+      compare(current, excludedNodeRange.to) < 0)
+  ) {
+    console.error(
+      \`codexhost: Node.js \${current} is not supported; ${NPM_PACKAGE_NAME} requires ${NPM_NODE_REQUIREMENT}.\`,
+    );
+    process.exit(1);
+  }
+}
 const repositoryUrl = "https://github.com/BytePioneer-AI/codex-host";
 const startupTraceStartedAt = Date.now();
 function startupTrace(stage) {
@@ -360,6 +441,17 @@ try {
   }
 }
 
+let platformVersion;
+try {
+  platformVersion = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8"))?.version;
+} catch {
+  fail(\`cannot read platform package metadata: \${packageRoot}\`);
+}
+if (platformVersion !== version) {
+  fail(
+    \`platform package version mismatch: '\${platformPackage}' at '\${packageRoot}' has \${JSON.stringify(platformVersion) ?? "no version"}; expected \${version}. Close Codex Desktop, then run: npm install -g @codexhost/cli@\${version} \${platformPackage}@\${version}\`,
+  );
+}
 startupTrace("platform package resolved");
 const executableSuffix = process.platform === "win32" ? ".exe" : "";
 const launcher = path.join(packageRoot, "bin", \`codexhost\${executableSuffix}\`);
@@ -367,21 +459,16 @@ const shim = path.join(packageRoot, "libexec", \`codexhost-shim\${executableSuff
 const hostRuntime = path.join(packageRoot, "app", "host-runtime.mjs");
 const desktopController = path.join(packageRoot, "app", "desktop-controller.mjs");
 const rendererExtension = path.join(packageRoot, "app", "renderer-extension.js");
+const consoleServer = path.join(packageRoot, "app", "console-server.mjs");
 
 function fail(message) {
   console.error(\`codexhost: \${message}\`);
   process.exit(1);
 }
 
-for (const [label, filePath] of [
-  ["launcher", launcher],
-  ["shim", shim],
-  ["host runtime", hostRuntime],
-  ["desktop controller", desktopController],
-  ["renderer extension", rendererExtension],
-]) {
-  if (!existsSync(filePath)) fail(\`missing \${label}: \${filePath}\`);
-}
+// Desktop resources are validated by the Launcher after it starts the recovery
+// console. Do not prevent recovery when one of those resources is missing.
+if (!existsSync(launcher)) fail(\`missing launcher: \${launcher}\`);
 
 function existingFile(filePath) {
   return typeof filePath === "string" && filePath.length > 0 && existsSync(filePath)
@@ -474,6 +561,7 @@ const updateEnvironment = {
 const remoteSshBootstrapEnvironment = [
   "CODEX_INSTALL_DIR",
   "CODEXHOST_DATA_DIR",
+  // Retired; older remote profile blocks still export it.
   "CODEXHOST_DEFAULT_AGENT",
   "CODEXHOST_HOST_NODE_PATH",
   "CODEXHOST_HOST_RUNTIME_PATH",
@@ -489,15 +577,21 @@ let launchArguments;
 let remoteArguments = null;
 let brokerArguments = null;
 let delegationArguments = null;
+let consoleArguments = null;
 if (userArguments.length === 0) {
   launchArguments = ["launch"];
 } else if (userArguments[0] === "launch") {
   launchArguments = userArguments;
 } else if (userArguments[0] === "inspect") {
   launchArguments = userArguments;
+} else if (userArguments[0] === "console" || userArguments[0] === "update") {
+  launchArguments = null;
+  consoleArguments = userArguments.slice(1);
 } else if (userArguments[0] === "remote") {
   launchArguments = null;
-  remoteArguments = userArguments.slice(1);
+  // The packaged resources are appended after the subcommand; without one, the
+  // first injected option would be read as the subcommand. Show usage instead.
+  remoteArguments = userArguments.length > 1 ? userArguments.slice(1) : ["help"];
 } else if (userArguments[0] === "broker") {
   launchArguments = null;
   brokerArguments = userArguments.slice(1);
@@ -515,6 +609,8 @@ if (userArguments.length === 0) {
       "  codexhost",
       "  codexhost --version",
       "  codexhost inspect",
+      "  codexhost console",
+      "  codexhost update",
       "  codexhost launch [launcher options]",
       "  codexhost remote install|start|stop|status|uninstall",
       "  codexhost broker install|status|stop|uninstall",
@@ -550,7 +646,9 @@ if (launchArguments?.[0] === "launch") {
     }
   }
   const extras = [];
-  if (!injected.has("--node")) extras.push("--node", process.execPath);
+  if (!injected.has("--node") && process.platform !== "darwin") {
+    extras.push("--node", process.execPath);
+  }
   if (!injected.has("--shim")) extras.push("--shim", shim);
   if (!injected.has("--host-runtime")) extras.push("--host-runtime", hostRuntime);
   if (!injected.has("--desktop-controller")) {
@@ -560,7 +658,17 @@ if (launchArguments?.[0] === "launch") {
   launchArguments = ["launch", ...extras, ...launchArguments.slice(1)];
 }
 
-if (delegationArguments !== null) {
+if (consoleArguments !== null) {
+  if (consoleArguments.length > 0) fail(userArguments[0] + " accepts no arguments");
+  if (!existsSync(consoleServer)) fail(\`missing console: \${consoleServer}\`);
+  const child = spawn(process.execPath, [consoleServer, userArguments[0] === "update" ? "update" : "open"], {
+    env: { ...updateEnvironment, CODEXHOST_LAUNCHER_EXECUTABLE: launcher },
+    stdio: "inherit",
+    windowsHide: true,
+  });
+  child.on("error", (error) => fail(error.message));
+  child.on("exit", (code) => process.exit(code ?? 1));
+} else if (delegationArguments !== null) {
   const child = spawn(
     process.execPath,
     [hostRuntime, "--codexhost-delegation-cli", ...delegationArguments],
@@ -604,26 +712,50 @@ if (delegationArguments !== null) {
     process.exit(code ?? 1);
   });
 } else if (remoteArguments !== null) {
+  // Every Harness whose plugin selects a BrokeredHarnessAdapter for a managed
+  // macOS remote Host needs its own Aqua LaunchAgent. Keep this list in sync with
+  // those plugin factories; Claude Code keeps the legacy unlabelled invocation.
+  // Install only registers them: the remote Host starts a broker on demand for an
+  // installed Harness and the broker exits when idle.
+  const nativeBrokerHarnessIds = ["claude-code", "codebuddy", "workbuddy", "cursor-cli"];
   const runNativeBroker = (command) => {
-    const broker = spawn(
-      launcher,
-      ["broker", command, "--node", process.execPath, "--host-runtime", hostRuntime],
-      {
-        env: updateEnvironment,
-        // remote status is a stable JSON stdout surface. Keep the broker's
-        // human-readable status beside it on stderr instead of corrupting JSON.
-        stdio: command === "status" ? ["inherit", process.stderr, "inherit"] : "inherit",
-        windowsHide: true,
-      },
-    );
-    broker.on("error", (error) => fail(error.message));
-    broker.on("exit", (code, signal) => {
-      if (signal) {
-        process.kill(process.pid, signal);
+    let index = 0;
+    let firstFailure = 0;
+    // Run every broker even after a failure so one broken service cannot leave
+    // the others stale or installed, then report the first failure.
+    const next = () => {
+      if (index >= nativeBrokerHarnessIds.length) {
+        process.exit(firstFailure);
         return;
       }
-      process.exit(code ?? 1);
-    });
+      const harnessId = nativeBrokerHarnessIds[index++];
+      const broker = spawn(
+        launcher,
+        [
+          "broker",
+          command,
+          ...(harnessId === "claude-code" ? [] : ["--harness", harnessId]),
+          "--node", process.execPath, "--host-runtime", hostRuntime,
+        ],
+        {
+          env: updateEnvironment,
+          // remote status is a stable JSON stdout surface. Keep the broker's
+          // human-readable status beside it on stderr instead of corrupting JSON.
+          stdio: command === "status" ? ["inherit", process.stderr, "inherit"] : "inherit",
+          windowsHide: true,
+        },
+      );
+      broker.on("error", (error) => fail(error.message));
+      broker.on("exit", (code, signal) => {
+        if (signal) {
+          process.kill(process.pid, signal);
+          return;
+        }
+        if (code !== 0 && firstFailure === 0) firstFailure = code ?? 1;
+        next();
+      });
+    };
+    next();
   };
   const child = spawn(
     process.execPath,
@@ -661,6 +793,11 @@ if (delegationArguments !== null) {
       }
       if (remoteArguments[0] === "uninstall") {
         runNativeBroker("uninstall");
+        return;
+      }
+      if (remoteArguments[0] === "stop") {
+        // Brokers stay registered for on-demand starts by the next remote Host.
+        runNativeBroker("stop");
         return;
       }
     }
@@ -773,7 +910,7 @@ The \`codexhost\` command launches the packaged Rust launcher with:
 
 ## Requirements
 
-- Node.js 22 or 24 (Node 20 and older are not supported)
+- ${NPM_NODE_REQUIREMENT} (other releases lack parts of the built-in \`node:sqlite\` module)
 - Official ChatGPT/Codex Desktop for macOS, Windows, or Linux
 - Pi on \`PATH\` when using the Pi agent
 - Claude Code installed when using the Claude Code adapter
@@ -807,7 +944,7 @@ export async function writeThirdPartyNotices(root, packageRoot) {
       );
     }
     await copyReleaseFile(
-      dependency.packageName === "@opencode-ai/sdk"
+      dependency.source.startsWith("scripts/release/licenses/")
         ? resolveRuntimeLicenseSource(root, dependency)
         : path.join(dependencyRoot, dependency.source),
       path.join(licensesDirectory, dependency.output),
@@ -861,7 +998,14 @@ export async function validateNpmPackage({ packageRoot, target, root }) {
   for (const file of files.filter((entry) => /\.(?:js|md|mjs|txt)$/u.test(entry.relative))) {
     const text = await readFile(file.absolute, "utf8");
     const forbiddenReferences = [root];
-    if (["app/desktop-controller.mjs", "app/renderer-extension.js"].includes(file.relative)) {
+    if (
+      [
+        "app/console-server.mjs",
+        "app/console-web.js",
+        "app/desktop-controller.mjs",
+        "app/renderer-extension.js",
+      ].includes(file.relative)
+    ) {
       forbiddenReferences.push("@anthropic-ai/", "@codexhost/adapter-claude-code");
     }
     if (file.relative !== "package.json" && text.includes("runtime/node")) {
@@ -1009,6 +1153,7 @@ export async function prepareNpmPackage({
     "npm Updater",
     true,
   );
+  if (target.hostPlatform === "linux") stripLinuxDebugInfo({ packageRoot });
 
   await runCommand(
     {
@@ -1038,10 +1183,27 @@ export async function prepareNpmPackage({
     },
     root,
   );
+  await runCommand(
+    {
+      label: "Console Server Bundle build",
+      command: process.execPath,
+      args: [
+        "packages/console-server/scripts/build-release.mjs",
+        "--output",
+        path.join(packageRoot, "app", "console-server.mjs"),
+      ],
+    },
+    root,
+  );
   await copyReleaseFile(
     path.join(root, "packages", "renderer-extension", "dist", "production.js"),
     path.join(packageRoot, "app", "renderer-extension.js"),
     "production Renderer Bundle",
+  );
+  await copyReleaseFile(
+    path.join(root, "packages", "renderer-extension", "dist", "console.js"),
+    path.join(packageRoot, "app", "console-web.js"),
+    "console page Bundle",
   );
   await writeDistributionMetadata(path.join(packageRoot, "app", "codexhost-distribution.json"), {
     version: packageVersion,

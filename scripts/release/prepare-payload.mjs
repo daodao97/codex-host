@@ -14,6 +14,31 @@ import { parseReleaseArguments, releaseUsage } from "./targets.mjs";
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const runtimeLicenses = [
   {
+    packageName: "@github/copilot-sdk",
+    license: "MIT",
+    source: "scripts/release/licenses/copilot-sdk-1.0.25-MIT.txt",
+    output: "Copilot-SDK-LICENSE.txt",
+  },
+  { packageName: "koffi", license: "MIT", source: "LICENSE.txt", output: "Koffi-LICENSE.txt" },
+  {
+    packageName: "vscode-jsonrpc",
+    license: "MIT",
+    source: "License.txt",
+    output: "VSCode-JSONRPC-LICENSE.txt",
+  },
+  {
+    packageName: "@deepseek-ai/cordis",
+    license: "MIT",
+    source: "LICENSE",
+    output: "Cordis-LICENSE.txt",
+  },
+  {
+    packageName: "@deepseek-ai/cosmokit",
+    license: "MIT",
+    source: "LICENSE",
+    output: "Cosmokit-LICENSE.txt",
+  },
+  {
     packageName: "@agentclientprotocol/sdk",
     license: "Apache-2.0",
     source: "LICENSE",
@@ -38,6 +63,12 @@ const runtimeLicenses = [
     output: "MCP-SDK-LICENSE.txt",
   },
   {
+    packageName: "@opencode/client",
+    license: "MIT",
+    source: "scripts/release/licenses/opencode-client-2.0.16-MIT.txt",
+    output: "OpenCode-v2-Client-LICENSE.txt",
+  },
+  {
     packageName: "@opencode-ai/sdk",
     license: "MIT",
     source: "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt",
@@ -54,6 +85,12 @@ const runtimeLicenses = [
     license: "SEE LICENSE IN LICENSE",
     source: "LICENSE",
     output: "QoderCN-Agent-SDK-LICENSE.txt",
+  },
+  {
+    packageName: "@qwen-code/sdk",
+    license: "Apache-2.0",
+    source: "scripts/release/licenses/qwen-code-sdk-0.1.26-Apache-2.0.txt",
+    output: "Qwen-Code-SDK-LICENSE.txt",
   },
   { packageName: "diff", license: "BSD-3-Clause", source: "LICENSE", output: "diff-LICENSE.txt" },
   { packageName: "lucide", license: "ISC", source: "LICENSE", output: "lucide-LICENSE.txt" },
@@ -201,7 +238,7 @@ export async function writeThirdPartyNotices(root, payloadRoot) {
       );
     }
     await copyReleaseFile(
-      dependency.packageName === "@opencode-ai/sdk"
+      dependency.source.startsWith("scripts/release/licenses/")
         ? resolveRuntimeLicenseSource(root, dependency)
         : path.join(dependencyRoot, dependency.source),
       path.join(licensesDirectory, dependency.output),
@@ -240,19 +277,28 @@ export function expectedPayloadPaths(target) {
     `libexec/codexhost-updater${target.executableSuffix}`,
     `runtime/node${target.executableSuffix}`,
     "app/codexhost-distribution.json",
+    "app/console-server.mjs",
+    "app/console-web.js",
     "app/desktop-controller.mjs",
     "app/host-runtime.mjs",
     "app/renderer-extension.js",
     ...preinstalledHarnessPluginPaths(),
     "licenses/Node.js-LICENSE.txt",
+    "licenses/Copilot-SDK-LICENSE.txt",
+    "licenses/Koffi-LICENSE.txt",
+    "licenses/VSCode-JSONRPC-LICENSE.txt",
     "licenses/Agent-Client-Protocol-SDK-LICENSE.txt",
     "licenses/Anthropic-SDK-LICENSE.txt",
     "licenses/Claude-Agent-SDK-LICENSE.md",
     "licenses/create-dmg-background-LICENSE.txt",
     "licenses/MCP-SDK-LICENSE.txt",
     "licenses/OpenCode-SDK-LICENSE.txt",
+    "licenses/OpenCode-v2-Client-LICENSE.txt",
     "licenses/Qoder-Agent-SDK-LICENSE.txt",
     "licenses/QoderCN-Agent-SDK-LICENSE.txt",
+    "licenses/Qwen-Code-SDK-LICENSE.txt",
+    "licenses/Cordis-LICENSE.txt",
+    "licenses/Cosmokit-LICENSE.txt",
     "licenses/diff-LICENSE.txt",
     "licenses/lucide-LICENSE.txt",
     "licenses/tailwindcss-LICENSE.txt",
@@ -298,7 +344,14 @@ export async function validatePayload({ payloadRoot, target, root }) {
   for (const file of files.filter((entry) => /\.(?:js|md|mjs|txt)$/u.test(entry.relative))) {
     const text = await readFile(file.absolute, "utf8");
     const forbiddenReferences = [root];
-    if (["app/desktop-controller.mjs", "app/renderer-extension.js"].includes(file.relative)) {
+    if (
+      [
+        "app/console-server.mjs",
+        "app/console-web.js",
+        "app/desktop-controller.mjs",
+        "app/renderer-extension.js",
+      ].includes(file.relative)
+    ) {
       forbiddenReferences.push("@anthropic-ai/", "@codexhost/adapter-claude-code");
     }
     if (forbiddenReferences.some((reference) => text.includes(reference))) {
@@ -387,10 +440,27 @@ export async function prepareReleasePayload({ target, root = repositoryRoot }) {
     },
     root,
   );
+  await runCommand(
+    {
+      label: "Console Server Bundle build",
+      command: process.execPath,
+      args: [
+        "packages/console-server/scripts/build-release.mjs",
+        "--output",
+        path.join(payloadRoot, "app", "console-server.mjs"),
+      ],
+    },
+    root,
+  );
   await copyReleaseFile(
     path.join(root, "packages", "renderer-extension", "dist", "production.js"),
     path.join(payloadRoot, "app", "renderer-extension.js"),
     "production Renderer Bundle",
+  );
+  await copyReleaseFile(
+    path.join(root, "packages", "renderer-extension", "dist", "console.js"),
+    path.join(payloadRoot, "app", "console-web.js"),
+    "console page Bundle",
   );
   await writeDistributionMetadata(path.join(payloadRoot, "app", "codexhost-distribution.json"), {
     version,

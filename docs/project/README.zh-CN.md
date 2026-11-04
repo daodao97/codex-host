@@ -12,7 +12,7 @@
 
 ⭐ 如果这个项目对你有帮助，请给我们一个 Star！⭐
 
-<p>
+<p align="center">
   <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a>
   <a href="https://openai.com/codex/"><img alt="Codex" src="../imgs/badge-codex.svg" /></a>
   <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a>
@@ -20,21 +20,37 @@
   <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a>
   <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="../imgs/badge-omp-v5.svg" /></a><br />
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek_Harness-4D6BFE?logo=deepseek&logoColor=white" /></a>
+  <a href="https://github.com/QwenLM/qwen-code"><img alt="Qwen Code" src="https://img.shields.io/badge/Qwen_Code-6950EF?logo=qwen&logoColor=white" /></a>
+  <a href="https://docs.devin.ai/cli"><img alt="Devin" src="../imgs/badge-devin.svg" /></a>
   <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="../imgs/badge-agy.svg" /></a>
   <a href="https://kiro.dev/docs/cli/"><img alt="Kiro CLI" src="../imgs/badge-kiro.svg" /></a>
-  <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="../imgs/badge-codebuddy.svg" /></a>
+  <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="../imgs/badge-codebuddy.svg" /></a><br />
   <a href="https://www.workbuddy.ai/docs/workbuddy/Quickstart"><img alt="WorkBuddy" src="../imgs/badge-workbuddy.svg" /></a>
   <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="../imgs/badge-cursor.svg" /></a>
   <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="../imgs/badge-hermes.svg" /></a>
   <a href="https://qoder.com/cli"><img alt="Qoder" src="../imgs/badge-qoder.svg" /></a>
+  <a href="../harnesses/copilot/copilot-harness-integration.md"><img alt="GitHub Copilot" src="https://img.shields.io/badge/Copilot-181717?logo=githubcopilot&logoColor=white" /></a>
 </p>
 <br />
 
-<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>下载</strong></a> · <a href="#跨-agent-协作">跨 Agent 协作</a> · <a href="#远程连接-harness">远程连接</a> · <a href="#加入交流群">交流群</a> · <a href="../../README.md">English</a> · <a href="README.ko.md">한국어</a></p>
+<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>下载</strong></a> · <a href="#跨-agent-协作">跨 Agent 协作</a> · <a href="#远程连接-harness">远程连接</a> · <a href="#加入交流群">微信交流群</a> · <a href="../../README.md">English</a> · <a href="README.ko.md">한국어</a></p>
 
 <br />
 
 </div>
+
+## 赞助
+
+<details open>
+<summary>点击收起</summary>
+
+<table>
+<tr>
+<td width="180"><a href="https://vibeapi.cc/sign-up?aff=AOYp"><img src="../imgs/sponsors/vibeapi.jpg" alt="VibeAPI" width="160"></a></td>
+<td>感谢 <b>VibeAPI</b> 赞助本项目！VibeAPI 主要面向重度开发者与团队，提供主流 AI 模型统一接入。主打 Codex 与 Claude 系列，坚持自建号池可溯源。首流响应极速，SLA 稳定性达 99.9%，缓存命中率高达 95%+。提供 7×24 小时人工技术支持，全面支持对公开票与企业合作。<a href="https://vibeapi.cc/sign-up?aff=AOYp">点此前往薅赛博鸡蛋</a></td>
+</tr>
+</table>
+</details>
 
 ## 界面预览
 
@@ -45,7 +61,7 @@ https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 ### 界面
 
 <div align="center">
-  <img width="90%" src="../imgs/codexhost-interface-overview.png" alt="Pi、Claude Code、OpenCode、Oh My Pi、Grok Build 和 DeepSeek Harness 作为独立 Thread 运行在 Codex Desktop 中">
+  <img width="90%" src="../imgs/codexhost-native-overview.png" alt="Claude Code、Pi、Grok Build、Oh My Pi 的会话运行在 Codex Desktop 中，并可使用 Diff 审查、Fork、Worktree 和 Agent 切换">
 </div>
 
 ## 快速使用
@@ -63,8 +79,14 @@ codexhost
 
 > Linux 支持 x64 / ARM64，详见 [Linux 说明](../platforms/linux/linux.zh-CN.md)。
 
+运行 `codexhost update` 可在终端检查并准备升级到最新版本。有更新时请先退出 Codex Desktop；准备完成后由后台更新器安装并重新启动 codexhost。已是最新版本时直接退出。
+
 <details>
 <summary>安装问题排查</summary>
+
+**codexhost 启动失败，或 Codex 打开了但没有 codexhost 功能**
+
+运行 `codexhost console`（Windows：开始菜单 →“codexhost console”），打开本地控制台 `http://127.0.0.1:4399/`。可以查看上次启动失败的原因、Codex Desktop 版本、Host Runtime 日志，并在 Codex 未运行时更新 codexhost。控制台随 codexhost 一起启动：安装包启动时自动在浏览器打开，终端启动时会输出访问地址。
 
 **macOS：首次打开提示「应用无法验证」**
 
@@ -84,59 +106,96 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 </details>
 
-### 交互展示
+### 功能介绍
 
 <table>
   <tr>
     <td colspan="2" valign="top">
-      <p><strong>完整工作界面</strong></p>
+      <p><strong>完整工作界面</strong><br /><sub>不同 Harness 的会话在同一个侧边栏里，输入框右下角随时切换 Agent</sub></p>
       <div align="center">
         <img width="90%" src="../imgs/codexhost-full-workspace.png" alt="Codex Desktop 中 codexhost 的完整工作界面，展示项目结构、对话区域和多个 Agent 选择器">
       </div>
     </td>
   </tr>
   <tr>
-    <td colspan="2" valign="top">
-      <p><strong>剩余额度显示</strong></p>
-      <img src="../imgs/grok-usage-limits.png" alt="五小时与七天窗口的剩余额度和重置时间">
+    <td width="50%" valign="top">
+      <p><strong>Diff 审查面板</strong><br /><sub>每轮改动自动汇总，点「审核」在右侧查看完整 Diff</sub></p>
+      <img src="../imgs/highlight-diff-review.png" alt="对话中的改动汇总卡片与右侧审查面板中的 Diff">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>从任意消息 Fork</strong><br /><sub>在当前工作空间，或新建 Worktree 并行开发</sub></p>
+      <img src="../imgs/highlight-fork-worktree.png" alt="从消息创建分支的菜单：在此工作空间或新工作树中创建分支">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong>输入 # 委派给其他 Agent</strong><br /><sub>多个 Agent 各开独立会话，并行执行 · <a href="#跨-agent-协作">了解更多</a></sub></p>
+      <img src="../imgs/highlight-delegation.png" alt="输入 # 选择 Codex、Claude Code、Grok 等 Agent，任务分别在独立会话中并行运行">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>工具调用与思考过程</strong><br /><sub>每次 edit、命令、思考都可展开查看细节</sub></p>
+      <img src="../imgs/highlight-tool-details.png" alt="展开编辑记录后显示新建文件的 Diff">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong>Subagent 可见</strong><br /><sub>每个 Subagent 有独立图标，可在右侧查看完整对话</sub></p>
+      <img src="../imgs/highlight-subagent.png" alt="主对话中显示 4 个 Subagent 的状态，右侧打开其中一个的完整对话">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>远程开发</strong><br /><sub>把 VPS 添加为项目，Agent 直接在远程机器上执行 · <a href="#远程连接-harness">了解更多</a></sub></p>
+      <img src="../imgs/highlight-remote.png" alt="侧边栏中的远程 VPS 项目，对话返回远程机器的工作目录">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong>用量一目了然</strong><br /><sub>缓存命中率、费用估算、上下文占用实时显示</sub></p>
+      <img src="../imgs/highlight-usage.png" alt="用量浮层：上下文、缓存命中率、缓存读写、Token 总数、费用估算">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>账号一键导入</strong><br /><sub>本机已登录的 Codex、Grok 凭证一键复制给 Pi，额度实时可见</sub></p>
+      <img src="../imgs/highlight-account-import.png" alt="账号设置页：账号的 5 小时与 7 天剩余额度，以及已导入 Pi 的账号">
     </td>
   </tr>
   <tr>
     <td colspan="2" valign="top">
-      <p><strong>Mermaid 图表可视化渲染</strong></p>
-      <div align="center">
-        <img width="90%" src="../imgs/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop 与 Pi Agent TUI 的 Mermaid 图表可视化渲染对比">
-      </div>
+      <p><strong>Mermaid 图表可视化渲染</strong><br /><sub>左：Codex Desktop + Pi，图表直接渲染；右：Pi TUI，只能看到源码</sub></p>
+      <img src="../imgs/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop 与 Pi Agent TUI 的 Mermaid 图表可视化渲染对比">
     </td>
   </tr>
 </table>
 
+
 ## 功能状态
 
-每个 Harness 都能使用 Codex Desktop 原生的 Edit Diff、Fork、消息修订和斜杠命令。
+各 Harness 根据自身能力接入 Codex Desktop 原生界面，具体支持情况见下表。
 
 <details>
 <summary>查看完整功能矩阵</summary>
 
-| 能力 | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="../imgs/harness-icon-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="../imgs/harness-icon-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="../imgs/harness-icon-agy.svg" /></a> | <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="../imgs/harness-icon-codebuddy.svg" width="24" height="24" /></a> | <a href="https://www.workbuddy.ai/docs/workbuddy/Quickstart"><img alt="WorkBuddy" src="../../packages/adapters/workbuddy/assets/icon.svg" width="24" height="24" /></a> | <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="../imgs/harness-icon-cursor.svg" /></a> | <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="../imgs/harness-icon-hermes.svg" /></a> | <a href="https://qoder.com/cli"><img alt="Qoder" src="../../packages/adapters/qoder/assets/icon.svg" width="28" height="28" /></a> |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| 流式回复 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 工具状态 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Edit Diff | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 提问 / 取消 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Model / Thinking 选择 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 工具审批 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 权限模式 | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Agent 间任务协作 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ |
-| Usage | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
-| Fork | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 上下文压缩 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | — | ✅ | ✅ |
-| 斜杠命令 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 修订上一条消息 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 能力 | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="../imgs/harness-icon-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="../imgs/harness-icon-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="../imgs/harness-icon-agy.svg" /></a> | <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="../imgs/harness-icon-codebuddy.svg" width="24" height="24" /></a> | <a href="https://www.workbuddy.ai/docs/workbuddy/Quickstart"><img alt="WorkBuddy" src="../../packages/adapters/workbuddy/assets/icon.svg" width="24" height="24" /></a> | <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="../imgs/harness-icon-cursor.svg" /></a> | <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="../imgs/harness-icon-hermes.svg" /></a> | <a href="https://qoder.com/cli"><img alt="Qoder" src="../../packages/adapters/qoder/assets/icon.svg" width="28" height="28" /></a> | <a href="../harnesses/copilot/copilot-harness-integration.md"><img alt="Copilot" src="../../packages/adapters/copilot/assets/icon.png" width="28" height="28" /></a> | <a href="https://github.com/QwenLM/qwen-code"><img alt="Qwen Code" src="../../packages/adapters/qwen-code/assets/icon.svg" width="28" height="28" /></a> | <a href="../harnesses/devin/devin-cli-acp-integration.md"><img alt="Devin" src="../../packages/adapters/devin/assets/icon.svg" width="28" height="28" /></a> |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| 流式回复 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 工具状态 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Edit Diff | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| 提问 / 取消 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — / ✅ |
+| Model / Thinking 选择 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ / — | ✅ / ◐ |
+| 工具审批 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 权限模式 | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Agent 间任务协作 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ◐ |
+| Usage | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | — |
+| Fork | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ◐ |
+| 上下文压缩 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | — | ✅ | ✅ | ✅ | — | — |
+| 斜杠命令 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | — |
+| 修订上一条消息 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ◐ |
+
+Devin：◐ 表示有条件支持或仍待原生验证。Thinking 依赖原生公布的选择器；Fork 和消息修订依赖协商成功的 revert 扩展，且仅支持同一工作区。已实现接收委派，但完整委派尚未验证。Thinking 与历史操作仍需登录后的真实原生验收，详见[集成文档](../harnesses/devin/devin-cli-acp-integration.md)。
 
 </details>
 
 ## 跨 Agent 协作
+
+在聊天输入框输入 `#`，可以选择要委派任务的 Agent，也可以查找当前所选 Harness 可用的命令和技能。
 
 你可以让当前 Agent 把独立任务交给另一个 Harness。例如：
 
@@ -206,13 +265,15 @@ CodexHost 的做法不同：
 
 </details>
 
-## 加入交流群
+<a id="加入交流群"></a>
+
+## 微信交流群
 
 <table align="center">
   <tr>
     <td>
-      <strong>加入交流群</strong><br />
-      <sub>对 CodexHost 用法、功能感兴趣的开发者可以扫码加入微信群交流。</sub>
+      <strong>微信交流群</strong><br />
+      <sub>对 CodexHost 用法、功能感兴趣的开发者可以扫码添加我的微信（备注“CodexHost”），我拉你进微信群交流。</sub>
       <ul>
         <li><sub>安装问题可以加群询问</sub></li>
         <li><sub>功能建议与反馈</sub></li>
@@ -222,7 +283,7 @@ CodexHost 的做法不同：
       <sub><strong>欢迎一起贡献~ </strong></sub>
     </td>
     <td align="center">
-      <img width="230" alt="7ba6eda891ba4c8d091f2a71a8b8e81d" src="https://github.com/user-attachments/assets/0e3c7269-c0c5-4f62-984a-f78b59166d6d" />
+      <img width="230" alt="微信二维码" src="../imgs/wechat-contact-qrcode.jpg" />
     </td>
   </tr>
 </table>
@@ -239,6 +300,9 @@ cd codex-host
 npm ci
 npm start
 ```
+
+可用 `npm start 0.12.0` 指定当前源码的运行版本，也支持 `0.13.0-rc.1` 等预发布版本。Host 状态、控制台版本和更新检查中的当前版本统一使用这个值。不传参数时仍为 `<仓库版本>-dev`；构建一次后，可用 `npm start 0.12.0 -- --no-build` 复用构建产物。参数只对本次启动生效，不修改版本文件、不发布 npm 包。源码安装仍不具备发行包的自更新资源；远程 npm 安装下载的是该版本已发布的包，不是本地源码。
+
 
 ### 运行架构
 
@@ -257,6 +321,14 @@ npm start
 
 - 感谢 [LINUX DO](https://linux.do/) 社区一直以来的支持。
 - 感谢 [Paseo](https://github.com/getpaseo/paseo) 项目在多 Harness 接入思路与架构设计方面带来的启发与参考。
+
+## 贡献者
+
+感谢所有为 CodexHost 做出贡献的开发者。
+
+<a href="https://github.com/BytePioneer-AI/codex-host/graphs/contributors">
+  <img alt="CodexHost 贡献者" src="https://contrib.rocks/image?repo=BytePioneer-AI/codex-host" />
+</a>
 
 ## Star History
 

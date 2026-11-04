@@ -6,7 +6,10 @@ import {
 } from "../src/renderer-draft-prewarm-policy.js";
 import type { RendererHostRouting as Routing } from "../src/renderer-host-routing.js";
 
-function setup(initialHostId: string) {
+function setup(
+  initialHostId: string,
+  options: { withWaitFor?: boolean; throwingHostId?: string; remoteHostId?: string } = {},
+) {
   const manager = (hostId: string) => ({
     getHostId: () => hostId,
     sendRequest: vi.fn(async () => ({})),
@@ -24,15 +27,18 @@ function setup(initialHostId: string) {
     dispatchAppServerResponse: vi.fn(),
   });
   const local = manager("local");
-  const remote = manager("remote-ssh-discovered:linux");
+  const remote = manager(options.remoteHostId ?? "remote-ssh-discovered:linux");
   const managers = new Map([
     ["local", local],
     [remote.getHostId(), remote],
   ]);
   const registry = {
     addManager: vi.fn(),
-    getForHostId: vi.fn((hostId: string) => managers.get(hostId)),
-    waitForManagerForHostId: vi.fn(),
+    getForHostId: vi.fn((hostId: string) => {
+      if (hostId === options.throwingHostId) throw new Error("host registry unavailable");
+      return managers.get(hostId);
+    }),
+    ...(options.withWaitFor === false ? {} : { waitForManagerForHostId: vi.fn() }),
   };
   const fiber = {
     memoizedProps: { executionTargetHostId: initialHostId },
@@ -41,11 +47,22 @@ function setup(initialHostId: string) {
   };
   const editor = { __reactFiber$host: fiber, parentElement: null };
   const editors = [editor];
+  const store = { familyBindings: new Map<unknown, Map<string, { value: unknown }>>() };
+  const appRoot = {
+    __reactContainer$test: {
+      memoizedState: {
+        memoizedState: {
+          current: { node: store, chain: {}, scope: {}, get() {}, set() {}, watch() {} },
+        },
+        next: null,
+      },
+    },
+  };
   const target: Record<string, unknown> = {};
   const renderer = {
     async evaluate<T>(expression: string): Promise<T> {
       return await runInNewContext(expression, {
-        document: { querySelectorAll: () => editors },
+        document: { querySelectorAll: () => editors, getElementById: () => appRoot },
         window: target,
         crypto: globalThis.crypto,
         TextEncoder,
@@ -56,8 +73,106 @@ function setup(initialHostId: string) {
       });
     },
   };
-  return { renderer, target, local, remote, managers, manager, fiber, editors };
+  return { renderer, target, local, remote, managers, manager, fiber, editors, store };
 }
+
+it("replaces a Remote Control bridge after reconnect even when the native manager is reused", async () => {
+  const hostId = "remote-control:synthetic";
+  const f = setup(hostId, { remoteHostId: hostId });
+  const originalSend = f.remote.requestClient.sendRequest;
+  let state = "connected";
+  let revision = 1;
+  f.store.familyBindings.set(
+    {},
+    new Map([
+      [
+        hostId,
+        {
+          value: {
+            state$: { get: () => state },
+            revision$: { get: () => revision },
+            appServerVersion$: { get: () => "synthetic" },
+          },
+        },
+      ],
+    ]),
+  );
+  await installRendererDraftPrewarmPolicyDirect(f.renderer);
+  const routing = f.target.__codexhostHostRoutingV1 as Routing;
+  try {
+    const first = routing.forHost(hostId);
+    expect(first?.manager).toBe(f.remote);
+    expect(routing.forHost(hostId)).toBe(first);
+    state = "disconnected";
+    revision++;
+    expect(routing.forHost(hostId)).toBeNull();
+    state = "connected";
+    revision++;
+    const next = routing.forHost(hostId);
+    expect(next?.manager).toBe(f.remote);
+    expect(next).not.toBe(first);
+    expect(() => first?.policy.requestTarget()).toThrow("retired");
+    expect(originalSend).not.toHaveBeenCalled();
+  } finally {
+    routing.dispose();
+  }
+});
+
+it("retires a native Remote Control route when reading its connection store throws", async () => {
+  const hostId = "remote-control:unreadable";
+  const f = setup(hostId, { remoteHostId: hostId });
+  await installRendererDraftPrewarmPolicyDirect(f.renderer);
+  const routing = f.target.__codexhostHostRoutingV1 as Routing;
+  const before = routing.forHost(hostId);
+  const bindings = f.store.familyBindings;
+  try {
+    Object.defineProperty(f.store, "familyBindings", {
+      configurable: true,
+      get() {
+        throw new Error("Scope unavailable");
+      },
+    });
+    expect(() => before?.policy.requestTarget()).toThrow("retired");
+    expect(routing.forHost(hostId)).toBeNull();
+    Object.defineProperty(f.store, "familyBindings", { configurable: true, value: bindings });
+    expect(routing.forHost(hostId)?.manager).toBe(f.remote);
+    expect(routing.forHost(hostId)).not.toBe(before);
+  } finally {
+    routing.dispose();
+  }
+});
+
+it("detects a completed reconnect between reads and leaves SSH routes unchanged", async () => {
+  const hostId = "remote-control:synthetic";
+  const f = setup(hostId, { remoteHostId: hostId });
+  let revision = 1;
+  const connection = {
+    state$: { get: () => "connected" },
+    revision$: { get: () => revision },
+    appServerVersion$: { get: () => "synthetic" },
+  };
+  const sshId = "remote-ssh-discovered:gateway";
+  const ssh = f.manager(sshId);
+  f.managers.set(sshId, ssh);
+  f.store.familyBindings.set(
+    {},
+    new Map([
+      [hostId, { value: connection }],
+      [sshId, { value: connection }],
+    ]),
+  );
+  await installRendererDraftPrewarmPolicyDirect(f.renderer);
+  const routing = f.target.__codexhostHostRoutingV1 as Routing;
+  try {
+    const first = routing.forHost(hostId);
+    const sshRoute = routing.forHost(sshId);
+    revision += 2;
+    expect(routing.forHost(hostId)).not.toBe(first);
+    expect(routing.forHost(sshId)).toBe(sshRoute);
+  } finally {
+    routing.dispose();
+  }
+});
 
 it.each(["local", "remote-ssh-discovered:linux"])(
   "keeps both Hosts addressable and switches immediately from %s without a Controller poll",
@@ -79,6 +194,117 @@ it.each(["local", "remote-ssh-discovered:linux"])(
     }
   },
 );
+
+it("resolves a remote Host from a registry without waitForManagerForHostId", async () => {
+  const fixture = setup("remote-ssh-discovered:linux", { withWaitFor: false });
+  await installRendererDraftPrewarmPolicyDirect(fixture.renderer);
+  const routing = fixture.target.__codexhostHostRoutingV1 as Routing;
+  expect(routing).toBeDefined();
+  try {
+    expect(routing.forComposer()?.manager).toBe(fixture.remote);
+    expect(routing.forHost(fixture.remote.getHostId())?.manager).toBe(fixture.remote);
+    expect(routing.forHost("local")?.manager).toBe(fixture.local);
+  } finally {
+    routing.dispose();
+  }
+});
+
+it("keeps routing closed when a registry lookup throws", async () => {
+  const fixture = setup("local", { throwingHostId: "remote-ssh-discovered:linux" });
+  await installRendererDraftPrewarmPolicyDirect(fixture.renderer);
+  const routing = fixture.target.__codexhostHostRoutingV1 as Routing;
+  expect(routing).toBeDefined();
+  try {
+    expect(routing.forComposer()?.manager).toBe(fixture.local);
+    expect(() => routing.forHost(fixture.remote.getHostId())).not.toThrow();
+    // The registry stays authoritative: a failed lookup must not revive the
+    // direct manager that is still present in discovery.managers.
+    expect(routing.forHost(fixture.remote.getHostId())).toBeNull();
+    expect(routing.forHost("local")?.manager).toBe(fixture.local);
+  } finally {
+    routing.dispose();
+  }
+});
+
+it("lists both Composer Hosts despite ambiguous routing and retains them in Settings", async () => {
+  const fixture = setup("local");
+  await installRendererDraftPrewarmPolicyDirect(fixture.renderer);
+  const routing = fixture.target.__codexhostHostRoutingV1 as Routing;
+  try {
+    fixture.editors.push({
+      __reactFiber$host: {
+        ...fixture.fiber,
+        memoizedProps: { executionTargetHostId: fixture.remote.getHostId() },
+      },
+      parentElement: null,
+    });
+    expect(routing.forComposer()).toBeNull();
+    expect(routing.knownHostIds?.()).toEqual(["local", fixture.remote.getHostId()]);
+    fixture.editors.length = 0;
+    fixture.managers.delete(fixture.remote.getHostId());
+    expect(routing.knownHostIds?.()).toEqual(["local", fixture.remote.getHostId()]);
+    expect(routing.forHost(fixture.remote.getHostId())).toBeNull();
+    expect(routing.forHost("local")?.manager).toBe(fixture.local);
+  } finally {
+    routing.dispose();
+  }
+  expect(routing.knownHostIds?.()).toEqual([]);
+});
+
+it.each(["both", "local-disconnected", "remote-disconnected"])(
+  "installs with multiple Composer Hosts (%s) without publishing an arbitrary draft route",
+  async (mode) => {
+    const fixture = setup("local");
+    fixture.editors.push({
+      __reactFiber$host: {
+        ...fixture.fiber,
+        memoizedProps: { executionTargetHostId: fixture.remote.getHostId() },
+      },
+      parentElement: null,
+    });
+    if (mode === "local-disconnected") fixture.managers.delete("local");
+    if (mode === "remote-disconnected") fixture.managers.delete(fixture.remote.getHostId());
+    await expect(installRendererDraftPrewarmPolicyDirect(fixture.renderer)).resolves.toMatchObject({
+      state: "ready",
+    });
+    const routing = fixture.target.__codexhostHostRoutingV1 as Routing;
+    try {
+      expect(routing.forComposer()).toBeNull();
+      expect(fixture.target.__codexhostDraftPrewarmPolicyV1).toBeUndefined();
+      const liveHostId = mode === "local-disconnected" ? fixture.remote.getHostId() : "local";
+      expect(routing.forHost(liveHostId)).not.toBeNull();
+      // Reconciliation must use the same readiness rule as first installation.
+      await expect(
+        installRendererDraftPrewarmPolicyDirect(fixture.renderer),
+      ).resolves.toMatchObject({
+        state: "ready",
+      });
+      fixture.editors.length = 0;
+      await expect(
+        installRendererDraftPrewarmPolicyDirect(fixture.renderer),
+      ).resolves.toMatchObject({
+        state: "ready",
+      });
+    } finally {
+      routing.dispose();
+    }
+  },
+);
+
+it("does not report ready without any valid native connection", async () => {
+  const fixture = setup("local");
+  fixture.managers.clear();
+  let now = 0;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => (now += 60_001));
+  try {
+    await expect(installRendererDraftPrewarmPolicyDirect(fixture.renderer)).rejects.toThrow(
+      "Renderer Host request manager is unavailable",
+    );
+  } finally {
+    clock.mockRestore();
+    (fixture.target.__codexhostHostRoutingV1 as Routing | undefined)?.dispose();
+  }
+});
 
 it("invalidates only the replaced Host and never revives its direct stale manager", async () => {
   const fixture = setup("local");
@@ -115,7 +341,7 @@ it("keeps selections per Host rather than copying a carrier to the newly active 
     await fixture.remote.requestClient.sendRequest("thread/start", { model: "native-model" });
     expect(remoteSend).toHaveBeenCalledWith("thread/start", { model: "native-model" });
     await fixture.local.requestClient.sendRequest("thread/start", { model: "native-model" });
-    expect(localSend).toHaveBeenCalledWith("thread/start", { model: "codexhost/pi-native" });
+    expect(localSend).toHaveBeenCalledWith("thread/start", { model: "native-model" });
   } finally {
     routing.dispose();
   }
@@ -175,8 +401,17 @@ it("does not infer local from a direct hook while a registry-backed Composer ide
   }
 });
 
-it("evaluates the same native Host router through the Inspector transport", async () => {
+it.each(["single", "mixed"])("installs %s Hosts through the Inspector transport", async (mode) => {
   const fixture = setup("remote-ssh-discovered:linux");
+  if (mode === "mixed") {
+    fixture.editors.push({
+      __reactFiber$host: {
+        ...fixture.fiber,
+        memoizedProps: { executionTargetHostId: "local" },
+      },
+      parentElement: null,
+    });
+  }
   const fromId = vi.fn(() => ({
     isDestroyed: () => false,
     getType: () => "window",
@@ -196,7 +431,8 @@ it("evaluates the same native Host router through the Inspector transport", asyn
   try {
     expect(fromId).toHaveBeenCalledWith(17);
     expect(routing.forHost("local")?.manager).toBe(fixture.local);
-    expect(routing.forComposer()?.manager).toBe(fixture.remote);
+    if (mode === "mixed") expect(routing.forComposer()).toBeNull();
+    else expect(routing.forComposer()?.manager).toBe(fixture.remote);
   } finally {
     routing.dispose();
   }

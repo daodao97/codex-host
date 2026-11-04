@@ -8,6 +8,13 @@ import {
 import * as globalSdk from "@qoder-ai/qoder-agent-sdk";
 import * as cnSdk from "@qodercn-ai/qodercn-agent-sdk";
 import { QoderAdapter } from "../src/qoder-adapter.js";
+import { checkQoderLogin } from "../src/qoder-login-check.js";
+import type * as QoderLoginCheck from "../src/qoder-login-check.js";
+
+vi.mock("../src/qoder-login-check.js", async (original) => ({
+  ...(await original<typeof QoderLoginCheck>()),
+  checkQoderLogin: vi.fn(async () => false),
+}));
 import { resolveQoderExecutable } from "../src/qoder-command.js";
 import type { QoderQuery, SDKMessage, SessionMessage } from "../src/qoder-sdk-types.js";
 
@@ -17,6 +24,8 @@ vi.mock("@qoder-ai/qoder-agent-sdk", async (original) => ({
   getSessionMessages: vi.fn(),
   getSessionInfo: vi.fn(),
   forkSession: vi.fn(),
+  // Config-scoped daemon must not spawn a real CLI in unit tests.
+  startDaemon: vi.fn(async () => ({ stop: vi.fn(async () => undefined) })),
 }));
 vi.mock("@qodercn-ai/qodercn-agent-sdk", async (original) => ({
   ...(await original<typeof cnSdk>()),
@@ -24,6 +33,7 @@ vi.mock("@qodercn-ai/qodercn-agent-sdk", async (original) => ({
   getSessionMessages: vi.fn(),
   getSessionInfo: vi.fn(),
   forkSession: vi.fn(),
+  startDaemon: vi.fn(async () => ({ stop: vi.fn(async () => undefined) })),
 }));
 
 class Query implements QoderQuery {
@@ -102,11 +112,58 @@ for (const v of variants)
       vi.mocked(v.sdk.getSessionMessages).mockResolvedValue(history());
       vi.mocked(v.sdk.getSessionInfo).mockResolvedValue(undefined);
       vi.mocked(v.sdk.forkSession).mockResolvedValue({ sessionId: "derived" });
+      vi.mocked(v.sdk.startDaemon).mockResolvedValue({
+        stop: vi.fn(async () => undefined),
+      } as never);
       const resolveExecutable = vi.fn(() => v.command);
       const adapter = new QoderAdapter({ variant: v.variant, environment, resolveExecutable });
       adapters.push(adapter);
       return { adapter, query, resolveExecutable };
     }
+    it.each([
+      ["Not logged in. Run login to authenticate.", "authenticationRequired"],
+      ["connection reset by peer", "nativeFailure"],
+      ["", "nativeFailure"],
+    ])("classifies inspection stderr %j as %s", async (stderr, code) => {
+      const { adapter, query } = setup();
+      query.getAvailableModels.mockRejectedValue(new Error("Transport closed"));
+      vi.mocked(v.sdk.query).mockImplementation((input) => {
+        input.options?.stderr?.(stderr.slice(0, 5));
+        input.options?.stderr?.(stderr.slice(5));
+        return query as unknown as ReturnType<typeof v.sdk.query>;
+      });
+      const result = await adapter.inspect();
+      expect(result).toMatchObject({ status: "unavailable", error: { code } });
+      if (code === "authenticationRequired") {
+        expect(result).toMatchObject({
+          error: { message: `Please run ${v.command} login to authenticate.` },
+        });
+      }
+      expect(query.close).toHaveBeenCalledOnce();
+    });
+
+    it("uses a native login diagnostic after an ambiguous transport failure", async () => {
+      const { adapter, query } = setup();
+      query.getAvailableModels.mockRejectedValue(new Error("Transport closed"));
+      vi.mocked(checkQoderLogin).mockResolvedValue(true);
+      expect(await adapter.inspect()).toMatchObject({
+        status: "unavailable",
+        error: { code: "authenticationRequired" },
+      });
+      expect(checkQoderLogin).toHaveBeenCalledWith(
+        v.command,
+        { QODER_SDK_CUSTOM_BASE_URL_BYOK: "1" },
+        undefined,
+      );
+    });
+
+    it("does not use CLI login state to diagnose token authentication", async () => {
+      const { adapter, query } = setup({ [v.token]: "test-token" });
+      query.getAvailableModels.mockRejectedValue(new Error("Transport closed"));
+      expect(await adapter.inspect()).toMatchObject({ error: { code: "nativeFailure" } });
+      expect(checkQoderLogin).not.toHaveBeenCalled();
+    });
+
     const ref = (id = v.id as string) =>
       nativeSessionRefSchema.parse({ harnessId: id, nativeSessionId: "source", formatVersion: 1 });
     const checkpoint = (id = v.id as string) =>
@@ -128,11 +185,9 @@ for (const v of variants)
       expect(resolveExecutable).toHaveBeenCalledWith(
         expect.objectContaining({ command: v.variant === "cn" ? "cn-command" : "global-command" }),
       );
-      expect(v.sdk.query).toHaveBeenCalledWith(
+      expect(v.sdk.startDaemon).toHaveBeenCalledWith(
         expect.objectContaining({
-          options: expect.objectContaining({
-            auth: { type: "accessToken", accessToken: { envVar: v.token } },
-          }),
+          auth: { type: "accessToken", accessToken: { envVar: v.token } },
         }),
       );
       vi.mocked(v.sdk.query).mockReturnValue(
@@ -144,15 +199,18 @@ for (const v of variants)
         environment: { [v.token]: "session-token" },
       });
       expect(opened.ok).toBe(true);
-      expect(v.sdk.query).toHaveBeenLastCalledWith(
+      expect(v.sdk.startDaemon).toHaveBeenLastCalledWith(
         expect.objectContaining({
-          options: expect.objectContaining({
-            env: expect.objectContaining({ [v.token]: "session-token" }),
-            auth: { type: "accessToken", accessToken: { envVar: v.token } },
-          }),
+          env: expect.objectContaining({ [v.token]: "session-token" }),
+          auth: { type: "accessToken", accessToken: { envVar: v.token } },
         }),
       );
+      const sessionOptions = vi.mocked(v.sdk.query).mock.lastCall?.[0].options;
+      expect(sessionOptions?.daemon).toBeDefined();
+      expect(sessionOptions).not.toHaveProperty("env");
+      expect(sessionOptions).not.toHaveProperty("auth");
       expect(v.other.query).not.toHaveBeenCalled();
+      expect(v.other.startDaemon).not.toHaveBeenCalled();
     });
 
     it("does not use the other distribution's token", async () => {
@@ -161,15 +219,19 @@ for (const v of variants)
           "other-token",
       });
       await adapter.inspect();
-      expect(v.sdk.query).toHaveBeenCalledWith(
-        expect.objectContaining({
-          options: expect.objectContaining({ auth: { type: "qodercli" } }),
-        }),
+      expect(v.sdk.startDaemon).toHaveBeenCalledWith(
+        expect.objectContaining({ auth: { type: "qodercli" } }),
       );
     });
 
     it("preserves its Harness identity in live state, Turn and checkpoint refs", async () => {
       const { adapter, query } = setup();
+      vi.mocked(v.sdk.query).mockImplementation(
+        ({ prompt }) =>
+          (typeof prompt === "string" ? new Query() : query) as unknown as ReturnType<
+            typeof v.sdk.query
+          >,
+      );
       const opened = await adapter.open({ kind: "create", cwd: "/workspace" });
       if (!opened.ok) throw new Error(opened.error.message);
       const session = opened.value;

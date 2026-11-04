@@ -35,16 +35,22 @@ import type {
   ThinkingSelectCompleted,
   TurnCancelAccepted,
   TurnCancelCommand,
+  TurnSteerAccepted,
+  TurnSteerCommand,
   TurnOutcome,
   TurnStartAccepted,
   TurnStartCommand,
 } from "@codexhost/harness-adapter";
 import {
+  unsupportedSteer,
   HarnessOutputChannel as OutputChannel,
+  liveHarnessCommandPrompt,
+  mergeLiveHarnessCommands,
   validateHostApprovalResponse,
   validateHostQuestionResponse,
 } from "@codexhost/harness-adapter";
 import {
+  type HarnessCommandCatalog,
   harnessIdSchema,
   harnessModelRefSchema,
   hostItemIdSchema,
@@ -68,6 +74,11 @@ import {
 } from "./acp-transport.js";
 import { KiroExecutableError, resolveKiroExecutable } from "./command.js";
 import { KIRO_COMMAND_CATALOG, formatKiroCommandResult } from "./commands.js";
+import {
+  KIRO_LIVE_COMMAND_ID_PREFIX,
+  kiroLiveCommands,
+  type KiroAvailableCommand,
+} from "./kiro-slash-commands.js";
 import { KiroTurnOutput } from "./turn-output.js";
 import { KiroUsage } from "./usage.js";
 import {
@@ -80,6 +91,7 @@ import {
   readKiroSnapshot,
   type KiroNativeSessionLocation,
 } from "./history.js";
+import { KiroSessionImport } from "./session-import.js";
 import {
   confirmedKiroConfig,
   kiroConfigValue,
@@ -140,6 +152,8 @@ export interface KiroAcpTransportLike {
   compact(): Promise<unknown>;
   sendExtensionRequest(method: string, params: Record<string, unknown>): Promise<unknown>;
   close(): Promise<void>;
+  /** Latest native command list of the open Session; absent on older transports. */
+  readonly availableCommands?: readonly KiroAvailableCommand[] | null;
 }
 
 export interface KiroAdapterOptions {
@@ -163,6 +177,8 @@ export interface KiroAdapterDependencies {
 export class KiroAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = harnessIdSchema.parse("kiro-cli");
   readonly commandCatalog = KIRO_COMMAND_CATALOG;
+  readonly liveCommandCatalog = true;
+  readonly sessionImport: KiroSessionImport;
 
   readonly #options: KiroAdapterOptions;
   readonly #deps: KiroAdapterDependencies;
@@ -176,6 +192,7 @@ export class KiroAdapter implements HarnessAdapter {
   constructor(options: KiroAdapterOptions = {}, deps: KiroAdapterDependencies = {}) {
     this.#options = options;
     this.#deps = deps;
+    this.sessionImport = new KiroSessionImport({ ...process.env, ...options.environment });
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
@@ -267,7 +284,7 @@ export class KiroAdapter implements HarnessAdapter {
             status: "error",
             error: {
               code: "authenticationRequired",
-              message: "Kiro CLI authentication is required",
+              message: "Kiro CLI authentication is required (run `kiro-cli login`)",
               retryable: false,
             },
           };
@@ -548,6 +565,7 @@ export class KiroAdapter implements HarnessAdapter {
   async close(): Promise<void> {
     try {
       await Promise.all([
+        this.sessionImport.close(),
         ...this.#inspectionInFlight.values(),
         ...[...this.#sessions].map((session) => session.close()),
       ]);
@@ -694,7 +712,7 @@ export class KiroSession implements HarnessSession {
     this.outputs = this.#channel.outputs;
 
     this.commands = {
-      list: async () => ({ ok: true, value: KIRO_COMMAND_CATALOG }),
+      list: async () => ({ ok: true, value: this.#liveCommandCatalog() }),
       execute: async (cmd: HarnessCommandInvocation) => this.#executeHarnessCommand(cmd),
     };
   }
@@ -795,6 +813,7 @@ export class KiroSession implements HarnessSession {
   }
 
   async execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  async execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   async execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   async execute(
     command: InteractionRespondCommand,
@@ -818,6 +837,8 @@ export class KiroSession implements HarnessSession {
     if (command.type === "turn.cancel") {
       return this.#cancelTurn(command);
     }
+    // Kiro's `_session/steer` is unpublished and unverified here; do not claim it.
+    if (command.type === "turn.steer") return unsupportedSteer("Kiro");
     if (command.type === "interaction.respond") {
       return this.#respondInteraction(command);
     }
@@ -1270,9 +1291,34 @@ export class KiroSession implements HarnessSession {
     };
   }
 
+  /** Built-ins plus the steering, agent and skill commands the open Session advertises. */
+  #liveCommandCatalog(): HarnessCommandCatalog {
+    const native = this.#transport.availableCommands ?? null;
+    return mergeLiveHarnessCommands(
+      KIRO_COMMAND_CATALOG,
+      KIRO_LIVE_COMMAND_ID_PREFIX,
+      native ? kiroLiveCommands(native) : null,
+    );
+  }
+
   async #executeHarnessCommand(
     command: HarnessCommandInvocation,
   ): Promise<HarnessResult<HarnessCommandAccepted>> {
+    const livePrompt = liveHarnessCommandPrompt(
+      this.#liveCommandCatalog(),
+      KIRO_LIVE_COMMAND_ID_PREFIX,
+      command.commandId,
+      command.arguments?.text,
+    );
+    if (livePrompt !== null) {
+      // ACP invokes advertised commands as prompt text starting with `/name`.
+      const started = await this.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse(command.turnId),
+        input: [{ type: "text", text: livePrompt }],
+      });
+      return started.ok ? { ok: true, value: { turnId: command.turnId } } : started;
+    }
     if (this.#closed)
       return {
         ok: false,

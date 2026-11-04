@@ -1,3 +1,4 @@
+import { createDshUsageStatistics } from "./modern/usage-statistics.js";
 import { deepSeekHarnessCommandCatalog } from "./harness-commands.js";
 
 import type {
@@ -78,10 +79,11 @@ class DelegateSelectionError extends Error {
   }
 }
 
-/** Public DeepSeek Adapter that verifies one supported DSH version for its lifetime. */
+/** Public DeepSeek Adapter that gates the local CLI version and delegates to the managed Web. */
 export class DeepSeekHarnessAdapter implements HarnessAdapter {
   readonly commandCatalog = deepSeekHarnessCommandCatalog();
   readonly harnessId: HarnessId = DEEPSEEK_HARNESS_ID;
+  readonly usageStatistics: ReturnType<typeof createDshUsageStatistics>;
   readonly sessionImport = Object.freeze({
     listCandidates: () => this.#listSessionImportCandidates(),
     resolveCandidate: async (
@@ -107,9 +109,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
             harnessId: this.harnessId,
             nativeSessionId,
             formatVersion: 1,
-            ...(this.#delegate?.version === "0.1.5-rc.1"
-              ? { locator: { dshVersion: "0.1.5-rc.1" } }
-              : {}),
+            ...(this.#delegate ? { locator: { dshVersion: this.#delegate.version } } : {}),
           }),
         },
       };
@@ -139,6 +139,8 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     dependencies: DeepSeekHarnessAdapterDependencies = {},
   ) {
     this.#options = options;
+    // Read-only over dsh's session files; no dsh process is started.
+    this.usageStatistics = createDshUsageStatistics(options.environment ?? process.env);
     this.#probeExecutable =
       dependencies.probeExecutable ?? ((input) => probeDeepSeekExecutableGeneration(input));
     this.#createModernAdapter =
@@ -276,10 +278,6 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
         durationMs: Math.max(0, Date.now() - startedAt),
       };
     }
-    if (executableFailure?.code === "unsupported") {
-      throw new DelegateSelectionError(executableFailure);
-    }
-
     if (await hasDeepSeekModernAuthenticationFingerprint(endpoint, signal)) {
       throw new DelegateSelectionError({
         code: "authenticationRequired",
@@ -298,7 +296,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
           ? { ...executableFailure, durationMs: Math.max(0, Date.now() - startedAt) }
           : {
               code: "notInstalled",
-              message: "No supported local DeepSeek Harness executable was found",
+              message: "No local DeepSeek Harness executable was found",
               retryable: false,
               stage: "resolve-executable",
               durationMs: Math.max(0, Date.now() - startedAt),

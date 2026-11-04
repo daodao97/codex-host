@@ -1,14 +1,18 @@
 import type {
+  HarnessError,
   HostApprovalInteraction,
   HostFileChange,
   HostItem,
   HostItemOutcome,
+  HostItemSnapshot,
   HostItemUpdate,
   HostQuestionInteraction,
+  HostTextInput,
   HostTurnSnapshot,
   HistoricalTurnOutcome,
   InteractionClosedEvent,
   ItemCompletedEvent,
+  ItemDetachedEvent,
   ItemStartedEvent,
   ItemUpdatedEvent,
   TurnCompletedEvent,
@@ -21,8 +25,12 @@ import type {
   JsonObject,
   JsonValue,
 } from "@codexhost/shared-contracts";
-import { REASONING_TRANSCRIPT_COMMAND } from "@codexhost/shared-contracts";
+import {
+  desktopImageAttachmentPaths,
+  REASONING_TRANSCRIPT_COMMAND,
+} from "@codexhost/shared-contracts";
 import { createTwoFilesPatch } from "diff";
+import path from "node:path";
 import { summarizeFileChanges } from "./file-change-summary.js";
 
 import {
@@ -33,12 +41,15 @@ import {
   projectCodexQuestionRequest,
   type CodexQuestionRequestProjection,
 } from "./codex-question.js";
+import { inferredFinalAnswer } from "./final-answer-phase.js";
+import { createAgentMedia, projectAgentMessageMedia } from "./codex-agent-media.js";
 
 export type ProjectableHostEvent =
   | TurnStartedEvent
   | ItemStartedEvent
   | ItemUpdatedEvent
   | ItemCompletedEvent
+  | ItemDetachedEvent
   | InteractionClosedEvent
   | TurnCompletedEvent;
 
@@ -64,7 +75,9 @@ export interface HistoricalTurnProjectionInput {
 }
 
 interface ProjectedItem {
+  /** Native text is authoritative for validation and failure recovery. */
   item: HostItem;
+  media?: ReturnType<typeof createAgentMedia>;
   outcome: HostItemOutcome | null;
   reasoningPartStarted: boolean;
   streamedCommandOutput: boolean;
@@ -122,6 +135,14 @@ function nestedString(
   return undefined;
 }
 
+function toolWorkingDirectory(args: JsonValue, defaultCwd: string): string {
+  const workdir = nestedString(args, ["workdir"]);
+  if (workdir === undefined) return defaultCwd;
+  const windows = /^(?:[a-z]:[/\\]|\\\\)/iu;
+  const paths = windows.test(defaultCwd) || windows.test(workdir) ? path.win32 : path.posix;
+  return paths.resolve(defaultCwd, workdir);
+}
+
 function toolOutputText(item: Extract<HostItem, { type: "toolExecution" }>): string | null {
   if (!item.output) return null;
   const text = item.output.content
@@ -145,7 +166,7 @@ export function toolCommandLine(toolName: string, args: JsonValue): string | und
   const command = nestedString(args, ["command", "cmd", "script", "commandLine", "command_line"]);
   if (
     command &&
-    ["bash", "exec", "terminal", "run", "shell", "powershell", "command"].includes(lower)
+    ["bash", "exec", "terminal", "run", "shell", "powershell", "pwsh", "command"].includes(lower)
   ) {
     return command;
   }
@@ -453,6 +474,32 @@ function collabAgentStatus(
   }
 }
 
+/**
+ * A Harness receives a turn's images only as the attachment paths in its text. Restore them as
+ * native `localImage` input, from which Desktop draws thumbnails instead of file chips.
+ */
+function projectUserInput(input: readonly HostTextInput[]): JsonObject[] {
+  return [
+    ...input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
+    ...input.flatMap(({ text }) =>
+      desktopImageAttachmentPaths(text).map((path) => ({ type: "localImage", path })),
+    ),
+  ];
+}
+
+/** `clientId` lets Desktop settle its optimistic steering message for this input. */
+function projectUserMessage(
+  item: Extract<HostItem, { type: "userMessage" }>,
+  clientId: string | null,
+): JsonObject {
+  return {
+    id: item.itemId,
+    type: "userMessage",
+    clientId,
+    content: projectUserInput(item.input),
+  };
+}
+
 function projectItem(
   item: HostItem,
   outcome: HostItemOutcome | null,
@@ -461,6 +508,8 @@ function projectItem(
   senderThreadId?: string,
 ): JsonObject {
   switch (item.type) {
+    case "userMessage":
+      return projectUserMessage(item, null);
     case "agentMessage":
       return {
         id: item.itemId,
@@ -469,13 +518,15 @@ function projectItem(
         phase: item.phase ?? null,
         memoryCitation: null,
       };
-    case "reasoning":
+    case "reasoning": {
+      const text = reasoningDisplayText(item.text);
       return {
         id: reasoningPreviewItemId(item.itemId),
         type: "reasoning",
-        summary: item.text.length > 0 ? [item.text] : [],
+        summary: text ? [text] : [],
         content: [],
       };
+    }
     case "contextCompaction":
       return { id: item.itemId, type: "contextCompaction" };
     case "commandExecution":
@@ -499,13 +550,13 @@ function projectItem(
           id: item.itemId,
           type: "commandExecution",
           command,
-          cwd: defaultCwd,
+          cwd: toolWorkingDirectory(item.arguments, defaultCwd),
           processId: null,
           source: "agent",
           status: itemStatus(outcome),
           commandActions: [],
           aggregatedOutput: includeCommandOutput ? toolOutputText(item) : null,
-          exitCode: outcome ? (outcome.status === "succeeded" ? 0 : 1) : null,
+          exitCode: null,
           durationMs: item.durationMs ?? null,
         };
       }
@@ -568,6 +619,10 @@ export function reasoningPreviewItemId(itemId: HostItemId): string {
   return `${itemId}-summary`;
 }
 
+function reasoningDisplayText(text: string): string {
+  return text.replace(/[\r\n]+$/u, "");
+}
+
 /**
  * Codex renders Reasoning summary deltas as an ephemeral one-line preview but
  * keeps no text after the Turn. The Command Execution lane is the one that
@@ -588,7 +643,7 @@ function projectReasoningTranscriptItem(
     source: "agent",
     status: itemStatus(outcome),
     commandActions: [],
-    aggregatedOutput: item.text.length > 0 ? item.text : null,
+    aggregatedOutput: reasoningDisplayText(item.text) || null,
     exitCode: outcome ? 0 : null,
     durationMs,
   };
@@ -638,6 +693,38 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
           additionalDetails: null,
         }
       : null;
+  const projectEntry = ({ item, outcome }: HostItemSnapshot): JsonObject[] => {
+    if (itemFileChanges(item) !== null) {
+      return files?.itemId === item.itemId
+        ? [projectItem(files, { status: "succeeded" }, cwd)]
+        : [];
+    }
+    if (item.type === "toolExecution") {
+      if (isTodoTool(item.toolName) || todoPlanFromTool(item.toolName, item.arguments)) return [];
+      if (isFileMutatingTool(item.toolName)) return [];
+    }
+    if (item.type === "reasoning" && !reasoningDisplayText(item.text)) return [];
+    return item.type === "reasoning"
+      ? [
+          projectItem(item, outcome, cwd, true, input.threadId ?? ""),
+          projectReasoningTranscriptItem(item, outcome, cwd),
+        ]
+      : [
+          projectItem(
+            item.type === "agentMessage" ? projectAgentMessageMedia(item, cwd) : item,
+            outcome,
+            cwd,
+            true,
+            input.threadId ?? "",
+          ),
+        ];
+  };
+  const entries = snapshot.items.map((entry) => ({ entry, projected: projectEntry(entry) }));
+  const lastVisible = entries.findLast(({ projected }) => projected.length > 0)?.entry;
+  const finalAnswer = inferredFinalAnswer(
+    lastVisible,
+    historicalStatus(snapshot.outcome) === "completed",
+  );
   return {
     id: turnId,
     status: historicalStatus(snapshot.outcome),
@@ -646,26 +733,15 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
         id: `${turnId}-user`,
         type: "userMessage",
         clientId: null,
-        content: snapshot.input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
+        content: projectUserInput(snapshot.input),
       },
-      ...snapshot.items.flatMap(({ item, outcome }) => {
-        if (itemFileChanges(item) !== null) {
-          return files?.itemId === item.itemId
-            ? [projectItem(files, { status: "succeeded" }, cwd)]
-            : [];
-        }
-        if (item.type === "toolExecution") {
-          if (isTodoTool(item.toolName) || todoPlanFromTool(item.toolName, item.arguments))
-            return [];
-          if (isFileMutatingTool(item.toolName)) return [];
-        }
-        return item.type === "reasoning"
-          ? [
-              projectItem(item, outcome, cwd, true, input.threadId ?? ""),
-              projectReasoningTranscriptItem(item, outcome, cwd),
-            ]
-          : [projectItem(item, outcome, cwd, true, input.threadId ?? "")];
-      }),
+      ...entries.flatMap(({ entry, projected }) =>
+        finalAnswer && entry === lastVisible
+          ? projected.map((item) =>
+              item.type === "agentMessage" ? { ...item, phase: finalAnswer.phase ?? null } : item,
+            )
+          : projected,
+      ),
     ],
     error,
     startedAt: hasTiming ? Math.floor(startedAtMs / 1000) : null,
@@ -704,15 +780,19 @@ function diffText(changes: HostFileChange[]): string {
 export class CodexTurnProjector {
   readonly #cwd: string;
   readonly #input: HostTurnSnapshot["input"];
+  readonly #clientUserMessageId: string | null;
   readonly #interactions = new Map<HostInteractionId, ProjectedInteraction>();
   readonly #items = new Map<HostItemId, ProjectedItem>();
   readonly #wireItemOrder: HostItemId[] = [];
+  readonly #userMessageClientIds = new Map<HostItemId, string>();
   readonly #startedAt: number;
   readonly #startedAtMs: number;
   readonly #threadId: string;
   readonly #turnId: HostTurnId;
   #completed = false;
   #started = false;
+  /** Items allowed to outlive the Turn terminal; they settle later on this Turn. */
+  readonly #detached = new Set<HostItemId>();
   #fileItemId: HostItemId | null = null;
 
   constructor(input: {
@@ -721,13 +801,44 @@ export class CodexTurnProjector {
     cwd: string;
     startedAtMs: number;
     initialInput?: HostTurnSnapshot["input"];
+    clientUserMessageId?: string;
   }) {
     this.#threadId = input.threadId;
     this.#turnId = input.turnId;
     this.#cwd = input.cwd;
     this.#input = input.initialInput ?? [];
+    this.#clientUserMessageId = input.clientUserMessageId ?? null;
     this.#startedAtMs = input.startedAtMs;
     this.#startedAt = Math.floor(input.startedAtMs / 1000);
+  }
+
+  get completed(): boolean {
+    return this.#completed;
+  }
+
+  /** A completed Turn still owns detached Items that have not settled. */
+  get hasOpenDetachedItems(): boolean {
+    return [...this.#detached].some((itemId) => this.#items.get(itemId)?.outcome === null);
+  }
+
+  /**
+   * Wire format of detached Items that have not settled: `inProgress` with the
+   * output accumulated so far. History projection overlays these by Item id.
+   */
+  openDetachedWireItems(): ReadonlyMap<HostItemId, JsonObject> {
+    const items = new Map<HostItemId, JsonObject>();
+    for (const itemId of this.#wireItemOrder) {
+      if (!this.#detached.has(itemId)) continue;
+      const projected = this.#items.get(itemId);
+      if (!projected || projected.outcome) continue;
+      items.set(itemId, projectItem(projected.item, null, this.#cwd, true, this.#threadId));
+    }
+    return items;
+  }
+
+  /** Associate steered input with the Desktop message that submitted it, before it is published. */
+  bindUserMessageClientId(itemId: HostItemId, clientId: string): void {
+    this.#userMessageClientIds.set(itemId, clientId);
   }
 
   pendingTurn(startedAt: number | null = null): JsonObject {
@@ -739,8 +850,9 @@ export class CodexTurnProjector {
         ...this.#wireItemOrder.flatMap((itemId) => {
           const projected = this.#items.get(itemId);
           if (!projected?.wireStarted) return [];
+          if (projected.item.type === "userMessage") return [this.#projectItem(projected.item)];
           if (projected.item.type === "agentMessage") {
-            return [projectItem(projected.item, projected.outcome, this.#cwd)];
+            return [this.#projectItem(projected.item, projected.outcome)];
           }
           return itemId === this.#fileItemId
             ? [projectItem(this.#fileSummary(), null, this.#cwd)]
@@ -755,12 +867,56 @@ export class CodexTurnProjector {
     };
   }
 
+  /**
+   * Close a failed output stream using only state already accepted by this projector.
+   * Project these events in order through the normal Host path so pending Desktop
+   * requests, Item lifecycles and Turn state settle together. No native success or
+   * checkpoint is inferred. This stays here because it must share the Item ledger.
+   */
+  failureEvents(error: HarnessError): ProjectableHostEvent[] {
+    const events: ProjectableHostEvent[] = [];
+    const turnId = this.#turnId;
+    const syntheticItems = new Set<HostItemId>();
+    if (!this.#started) events.push({ type: "turn.started", turnId });
+    for (const [interactionId, interaction] of this.#interactions) {
+      events.push({ type: "interaction.closed", turnId, interactionId, reason: "cancelled" });
+      // Closing a standalone Question also completes its synthetic Tool Item.
+      if (interaction.type === "question" && interaction.syntheticItem)
+        syntheticItems.add(interaction.itemId);
+    }
+    for (const { item, outcome } of this.#items.values()) {
+      if (outcome !== null || syntheticItems.has(item.itemId)) continue;
+      events.push({
+        type: "item.completed",
+        turnId,
+        snapshot: { item, outcome: { status: "failed", error } },
+      });
+    }
+    if (!this.#completed)
+      events.push({ type: "turn.completed", turnId, outcome: { status: "failed", error } });
+    return events;
+  }
+
   project(event: ProjectableHostEvent, emittedAtMs = Date.now()): CodexTurnProjection {
     if (event.turnId !== this.#turnId) {
       throw new Error("Host output references another Turn");
     }
-    if (this.#completed) throw new Error("Host output follows the Turn terminal event");
+    if (
+      this.#completed &&
+      !(
+        (event.type === "item.updated" && this.#detached.has(event.itemId)) ||
+        (event.type === "item.completed" && this.#detached.has(event.snapshot.item.itemId))
+      )
+    ) {
+      throw new Error("Host output follows the Turn terminal event");
+    }
     switch (event.type) {
+      case "item.detached":
+        if (this.#activeItem(event.itemId).item.type !== "commandExecution") {
+          throw new Error("Only a command Item can outlive its Turn");
+        }
+        this.#detached.add(event.itemId);
+        return { messages: [] };
       case "turn.started":
         return this.#startTurn();
       case "item.started":
@@ -860,6 +1016,21 @@ export class CodexTurnProjector {
             turn: this.pendingTurn(this.#startedAt),
           },
         },
+        // Connected viewers consume item events; turn snapshots alone do not
+        // insert later user messages into an already-open conversation.
+        ...this.#projectInput().flatMap((item) =>
+          ["item/started", "item/completed"].map((method) => ({
+            method,
+            emittedAtMs: this.#startedAtMs,
+            params: {
+              threadId: this.#threadId,
+              turnId: this.#turnId,
+              startedAtMs: this.#startedAtMs,
+              ...(method === "item/completed" ? { completedAtMs: this.#startedAtMs } : {}),
+              item,
+            },
+          })),
+        ),
       ],
     };
   }
@@ -868,7 +1039,10 @@ export class CodexTurnProjector {
     this.#requireStarted();
     if (this.#items.has(event.item.itemId)) throw new Error("Host Item started more than once");
     const projected: ProjectedItem = {
-      item: event.item,
+      item: { ...event.item },
+      ...(event.item.type === "agentMessage"
+        ? { media: createAgentMedia(event.item.text, this.#cwd) }
+        : {}),
       outcome: null,
       reasoningPartStarted: false,
       streamedCommandOutput: false,
@@ -878,7 +1052,9 @@ export class CodexTurnProjector {
     this.#items.set(event.item.itemId, projected);
     if (
       (event.item.type === "agentMessage" || event.item.type === "reasoning") &&
-      event.item.text.length === 0
+      (event.item.type === "reasoning"
+        ? reasoningDisplayText(event.item.text).length === 0
+        : this.#agentMedia(event.item.itemId).text.length === 0)
     ) {
       // An empty Reasoning Item would surface as a transcript card with no
       // content, so defer the wire Item until real summary text arrives.
@@ -896,13 +1072,15 @@ export class CodexTurnProjector {
       if (isFileMutatingTool(event.item.toolName)) return { messages: [] };
     }
     if (event.item.type === "fileChange") return { messages: this.#fileChangeUpdates(startedAtMs) };
-    const startedItem = event.item.type === "reasoning" ? { ...event.item, text: "" } : event.item;
+    const startedItem =
+      event.item.type === "reasoning" ? { ...event.item, text: "" } : this.#mediaItem(event.item);
     const messages = [this.#startWireItem(projected, startedItem, startedAtMs)];
     if (event.item.type === "reasoning") {
+      const text = reasoningDisplayText(event.item.text);
       messages.push(
         this.#startReasoningTranscript(event.item, startedAtMs),
-        this.#reasoningOutputDelta(event.item.itemId, event.item.text, startedAtMs),
-        ...this.#reasoningDelta(projected, event.item.text, startedAtMs),
+        this.#reasoningOutputDelta(event.item.itemId, text, startedAtMs),
+        ...this.#reasoningDelta(projected, text, startedAtMs),
       );
     }
     return { messages };
@@ -917,20 +1095,17 @@ export class CodexTurnProjector {
     if (event.update.type === "text.append") {
       if (event.update.text.length === 0) return { messages };
       if (next.type === "agentMessage") {
-        if (!projected.wireStarted) {
-          messages.push(this.#startWireItem(projected, previous, emittedAtMs));
-        }
-        messages.push({
-          method: "item/agentMessage/delta",
-          emittedAtMs,
-          params: {
-            threadId: this.#threadId,
-            turnId: this.#turnId,
-            itemId: event.itemId,
-            delta: event.update.text,
-          },
-        });
+        const before = this.#mediaItem(previous);
+        const delta = this.#agentMedia(event.itemId).append(event.update.text);
+        if (!delta) return { messages };
+        if (!projected.wireStarted)
+          messages.push(this.#startWireItem(projected, before, emittedAtMs));
+        messages.push(this.#agentDelta(event.itemId, delta, emittedAtMs));
       } else if (next.type === "reasoning") {
+        const previousText =
+          previous.type === "reasoning" ? reasoningDisplayText(previous.text) : "";
+        const delta = reasoningDisplayText(next.text).slice(previousText.length);
+        if (!delta) return { messages };
         if (!projected.wireStarted) {
           messages.push(
             this.#startWireItem(projected, { ...next, text: "" }, emittedAtMs),
@@ -938,8 +1113,8 @@ export class CodexTurnProjector {
           );
         }
         messages.push(
-          this.#reasoningOutputDelta(event.itemId, event.update.text, emittedAtMs),
-          ...this.#reasoningDelta(projected, event.update.text, emittedAtMs),
+          this.#reasoningOutputDelta(event.itemId, delta, emittedAtMs),
+          ...this.#reasoningDelta(projected, delta, emittedAtMs),
         );
       }
     } else if (event.update.type === "output.append") {
@@ -1015,7 +1190,17 @@ export class CodexTurnProjector {
         throw new Error("Host textual Item completion does not match its append updates");
       }
     }
-    projected.item = event.snapshot.item;
+    // Validate against native text above before flushing the independent Desktop view.
+    const mediaMessages: JsonObject[] = [];
+    const before = this.#mediaItem(projected.item);
+    const delta =
+      projected.item.type === "agentMessage" ? this.#agentMedia(projected.item.itemId).flush() : "";
+    if (delta) {
+      if (!projected.wireStarted)
+        mediaMessages.push(this.#startWireItem(projected, before, emittedAtMs));
+      mediaMessages.push(this.#agentDelta(projected.item.itemId, delta, emittedAtMs));
+    }
+    projected.item = { ...event.snapshot.item };
     projected.outcome = event.snapshot.outcome;
     const startedAtMs = projected.startedAtMs;
     if (startedAtMs === undefined) throw new Error("Codex Item completed without a start time");
@@ -1047,14 +1232,9 @@ export class CodexTurnProjector {
       return { messages: [] };
     }
     const messages = [
+      ...mediaMessages,
       completedItem(
-        projectItem(
-          projected.item,
-          projected.outcome,
-          this.#cwd,
-          !projected.streamedCommandOutput,
-          this.#threadId,
-        ),
+        this.#projectItem(projected.item, projected.outcome, !projected.streamedCommandOutput),
       ),
     ];
     if (projected.item.type === "reasoning") {
@@ -1095,11 +1275,17 @@ export class CodexTurnProjector {
     if (this.#interactions.size > 0) {
       throw new Error("Host Turn completed with pending Interactions");
     }
-    const active = [...this.#items.values()].filter(({ outcome }) => outcome === null);
+    const active = [...this.#items.values()].filter(
+      ({ item, outcome }) => outcome === null && !this.#detached.has(item.itemId),
+    );
     if (active.length > 0) throw new Error("Host Turn completed with active Items");
     this.#completed = true;
     const completedAt = Math.floor(completedAtMs / 1000);
     const error = turnError(event.outcome);
+    const lastWireItemId = this.#wireItemOrder.at(-1);
+    const lastVisible = lastWireItemId === undefined ? undefined : this.#items.get(lastWireItemId);
+    const finalAnswer = inferredFinalAnswer(lastVisible, event.outcome.status === "succeeded");
+    if (lastVisible && finalAnswer) lastVisible.item = finalAnswer;
     const turn: JsonObject = {
       id: this.#turnId,
       status: turnStatus(event.outcome),
@@ -1108,7 +1294,11 @@ export class CodexTurnProjector {
         ...this.#projectInput(),
         ...this.#wireItemOrder.flatMap((itemId) => {
           const projected = this.#items.get(itemId);
-          if (!projected?.outcome) throw new Error("Host Turn contains an incomplete Item");
+          if (!projected) throw new Error("Host Turn contains an unknown Item");
+          if (!projected.outcome) {
+            if (this.#detached.has(itemId)) return [];
+            throw new Error("Host Turn contains an incomplete Item");
+          }
           if (!projected.wireStarted) return [];
           if (projected.item.type === "reasoning") {
             const reasoning = projected.item;
@@ -1122,8 +1312,9 @@ export class CodexTurnProjector {
               ),
             ];
           }
+          if (projected.item.type === "userMessage") return [this.#projectItem(projected.item)];
           if (projected.item.type === "agentMessage") {
-            return [projectItem(projected.item, projected.outcome, this.#cwd)];
+            return [this.#projectItem(projected.item, projected.outcome)];
           }
           return itemId === this.#fileItemId
             ? [projectItem(this.#fileSummary(), { status: "succeeded" }, this.#cwd)]
@@ -1152,6 +1343,11 @@ export class CodexTurnProjector {
               },
             ]
           : []),
+        // Desktop ignores Turn items on turn/completed and replaces an Item by id
+        // on item/completed, so the inferred phase must arrive as a replacement.
+        ...(lastVisible && finalAnswer
+          ? [this.#completedItemReplay(lastVisible, completedAtMs)]
+          : []),
         ...(error
           ? [
               {
@@ -1174,6 +1370,21 @@ export class CodexTurnProjector {
     };
   }
 
+  #completedItemReplay(projected: ProjectedItem, emittedAtMs: number): JsonObject {
+    const startedAtMs = projected.startedAtMs ?? emittedAtMs;
+    return {
+      method: "item/completed",
+      emittedAtMs,
+      params: {
+        threadId: this.#threadId,
+        turnId: this.#turnId,
+        startedAtMs,
+        completedAtMs: startedAtMs + (projected.durationMs ?? 0),
+        item: this.#projectItem(projected.item, projected.outcome),
+      },
+    };
+  }
+
   #projectInput(): JsonObject[] {
     return this.#input.length === 0
       ? []
@@ -1181,8 +1392,8 @@ export class CodexTurnProjector {
           {
             id: `${this.#turnId}-user`,
             type: "userMessage",
-            clientId: null,
-            content: this.#input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
+            clientId: this.#clientUserMessageId,
+            content: projectUserInput(this.#input),
           },
         ];
   }
@@ -1199,8 +1410,47 @@ export class CodexTurnProjector {
         threadId: this.#threadId,
         turnId: this.#turnId,
         startedAtMs,
-        item: projectItem(item, null, this.#cwd, true, this.#threadId),
+        item:
+          item.type === "agentMessage"
+            ? projectItem(item, null, this.#cwd, true, this.#threadId)
+            : this.#projectItem(item, null),
       },
+    };
+  }
+
+  #projectItem(
+    item: HostItem,
+    outcome: HostItemOutcome | null = null,
+    includeCommandOutput = true,
+  ): JsonObject {
+    return item.type === "userMessage"
+      ? projectUserMessage(item, this.#userMessageClientIds.get(item.itemId) ?? null)
+      : projectItem(
+          this.#mediaItem(item),
+          outcome,
+          this.#cwd,
+          includeCommandOutput,
+          this.#threadId,
+        );
+  }
+
+  #agentMedia(itemId: HostItemId): ReturnType<typeof createAgentMedia> {
+    const media = this.#items.get(itemId)?.media;
+    if (!media) throw new Error("Agent Item media projection state is missing");
+    return media;
+  }
+
+  #mediaItem(item: HostItem): HostItem {
+    return item.type === "agentMessage"
+      ? { ...item, text: this.#agentMedia(item.itemId).text }
+      : item;
+  }
+
+  #agentDelta(itemId: HostItemId, delta: string, emittedAtMs: number): JsonObject {
+    return {
+      method: "item/agentMessage/delta",
+      emittedAtMs,
+      params: { threadId: this.#threadId, turnId: this.#turnId, itemId, delta },
     };
   }
 

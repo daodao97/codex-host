@@ -2,6 +2,7 @@
 
 mod active_update;
 mod compatibility;
+mod console;
 mod desktop_attachment;
 mod desktop_path_overrides;
 mod installation_layout;
@@ -9,6 +10,7 @@ mod native_harness_broker;
 mod runtime_instance;
 #[cfg(target_os = "linux")]
 mod secure_storage;
+mod startup_record;
 #[cfg(target_os = "macos")]
 mod system_proxy_environment;
 
@@ -27,7 +29,7 @@ use std::sync::{OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use active_update::start_pending_update;
 use active_update::update_waiting_for_launcher_exit;
 #[cfg(target_os = "windows")]
@@ -58,15 +60,13 @@ use runtime_instance::{
     StartupObservation, StartupState, classify_startup, default_descriptor_path, read_descriptor,
     remove_matching_descriptor,
 };
-#[cfg(target_os = "macos")]
-use system_proxy_environment::launcher_proxy_environment;
+use startup_record::StartupOutcome;
 
 const HOST_NODE_PATH_ENV: &str = "CODEXHOST_HOST_NODE_PATH";
 const HOST_RUNTIME_PATH_ENV: &str = "CODEXHOST_HOST_RUNTIME_PATH";
 const DATA_DIRECTORY_ENV: &str = "CODEXHOST_DATA_DIR";
 const REMOTE_SSH_MANAGED_ENV: &str = "CODEXHOST_REMOTE_SSH_MANAGED";
 const PI_COMMAND_ENV: &str = "CODEXHOST_PI_COMMAND";
-const DEFAULT_AGENT_ENV: &str = "CODEXHOST_DEFAULT_AGENT";
 const LAUNCHER_PID_ENV: &str = "CODEXHOST_LAUNCHER_PID";
 const LAUNCHER_EXECUTABLE_ENV: &str = "CODEXHOST_LAUNCHER_EXECUTABLE";
 const RUNTIME_DESCRIPTOR_PATH_ENV: &str = "CODEXHOST_RUNTIME_DESCRIPTOR_PATH";
@@ -77,6 +77,9 @@ const NPM_CLI_PATH_ENV: &str = "CODEXHOST_NPM_CLI_PATH";
 const NPM_LAUNCHER_PATH_ENV: &str = "CODEXHOST_NPM_LAUNCHER_PATH";
 const NPM_PACKAGE_ROOT_ENV: &str = "CODEXHOST_NPM_PACKAGE_ROOT";
 const CODEXHOST_CLI_PATH_ENV: &str = "CODEXHOST_CLI_PATH";
+/// Node used by the delegation CLI when the installation has no bundled Node
+/// (npm packages rely on the user's Node). Only this launcher reads it.
+const CODEXHOST_CLI_NODE_PATH_ENV: &str = "CODEXHOST_CLI_NODE_PATH";
 const NPM_UPDATE_RUNTIME_ENV: [&str; 4] = [
     NPM_NODE_PATH_ENV,
     NPM_CLI_PATH_ENV,
@@ -122,10 +125,22 @@ impl Display for UnmanagedDesktopConflict {
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 impl Error for UnmanagedDesktopConflict {}
 
+const USAGE: &str = "usage:
+  codexhost
+  codexhost --help
+  codexhost --version
+  codexhost inspect [--json] [--custom-install <absolute-directory>]
+  codexhost console
+  codexhost update
+  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]
+  codexhost broker install|status|stop|uninstall
+  codexhost delegate --help
+  codexhost harness list|inspect ...
+  codexhost delegate start ...
+  codexhost thread send|cancel|read|wait|watch|watches|list ...";
+
 fn usage() {
-    eprintln!(
-        "usage:\n  codexhost\n  codexhost inspect [--custom-install <absolute-directory>]\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost broker install|status|stop|uninstall\n  codexhost delegate --help\n  codexhost harness inspect ...\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list ..."
-    );
+    eprintln!("{USAGE}");
 }
 
 const LOOPBACK_URL_MAX_BYTES: u64 = 4096;
@@ -175,7 +190,8 @@ fn read_bounded_loopback_url(reader: impl Read) -> Result<String, Box<dyn Error>
 fn run_delegation_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let executable = env::current_exe()?.canonicalize()?;
     let resources = InstalledResources::from_executable(&executable)?;
-    let status = Command::new(&resources.node)
+    let node = delegation_node(&resources.node, env::var_os(CODEXHOST_CLI_NODE_PATH_ENV))?;
+    let status = Command::new(&node)
         .arg(node_entrypoint_path(&resources.host_runtime))
         .arg("--codexhost-delegation-cli")
         .args(arguments)
@@ -188,7 +204,23 @@ fn run_delegation_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     }
 }
 
+/// Prefer the bundled Node; npm installations have none and use the Host's.
+/// A relative bundled path (source checkout) is resolved by the OS as before.
+fn delegation_node(bundled: &Path, host_node: Option<OsString>) -> Result<PathBuf, String> {
+    if !bundled.is_absolute() || bundled.is_file() {
+        return Ok(bundled.to_path_buf());
+    }
+    match host_node.map(PathBuf::from) {
+        Some(node) if node.is_absolute() => Ok(node),
+        _ => Err(format!(
+            "codexhost delegation cannot find Node: {} does not exist and {CODEXHOST_CLI_NODE_PATH_ENV} is not an absolute path. Run this command inside a codexhost-managed session; if a shell environment policy filters variables, keep {CODEXHOST_CLI_NODE_PATH_ENV}.",
+            bundled.display()
+        )),
+    }
+}
+
 fn startup_trace(stage: &str) {
+    startup_record::stage(stage);
     if env::var_os(STARTUP_TRACE_ENV).as_deref() != Some(std::ffi::OsStr::new("1")) {
         return;
     }
@@ -210,6 +242,9 @@ fn emit_ready_line(output: &mut impl Write) -> std::io::Result<()> {
 /// non-zero on stderr exactly like before.
 fn notify_ready_and_detach() -> Result<(), Box<dyn Error>> {
     startup_trace("publishing ready");
+    startup_record::finish(StartupOutcome::Ready, None);
+    // Before `ready`: a terminal launch must still see the printed address.
+    console::show_for_launch(None);
     emit_ready_line(&mut std::io::stdout())?;
     codexhost_platform::detach_from_terminal()?;
     Ok(())
@@ -280,14 +315,21 @@ fn discover_desktop(
 ) -> Result<DesktopInstallation, Box<dyn Error>> {
     match custom_install_root {
         #[cfg(target_os = "windows")]
-        Some(root) => Ok(codexhost_platform::discover_codex_desktop_from_root(root)?),
+        Some(root) => Ok(codexhost_platform::discover_codex_desktop_from_root(
+            &absolute_directory(root, "--custom-install")?,
+        )?),
         #[cfg(not(target_os = "windows"))]
         Some(_) => Err("--custom-install is supported on Windows only".into()),
         None => Ok(discover_codex_desktop()?),
     }
 }
 
-fn inspect(custom_install_root: Option<&Path>) -> Result<(), Box<dyn Error>> {
+fn inspect(custom_install_root: Option<&Path>, json: bool) -> Result<(), Box<dyn Error>> {
+    if json {
+        let document = console::inspect_json(discover_desktop(custom_install_root))?;
+        println!("{}", serde_json::to_string(&document)?);
+        return Ok(());
+    }
     let installation = discover_desktop(custom_install_root)?;
     let process_ids = codexhost_platform::desktop_process_ids_for_installation(&installation)?;
     print_installation(&installation, &process_ids);
@@ -313,7 +355,6 @@ struct ResolvedLaunchOptions {
     desktop_controller: PathBuf,
     renderer_extension: PathBuf,
     pi: Option<PathBuf>,
-    custom_install_root: Option<PathBuf>,
 }
 
 fn required_path(arguments: &[String], index: &mut usize, option: &str) -> Result<PathBuf, String> {
@@ -371,20 +412,27 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
 }
 
 /// Parse the options accepted by `codexhost inspect`.
-fn parse_inspect_options(arguments: &[String]) -> Result<Option<PathBuf>, String> {
-    let mut custom_install_root = None;
+#[derive(Debug, Default, PartialEq, Eq)]
+struct InspectOptions {
+    custom_install_root: Option<PathBuf>,
+    json: bool,
+}
+
+fn parse_inspect_options(arguments: &[String]) -> Result<InspectOptions, String> {
+    let mut options = InspectOptions::default();
     let mut index = 0;
     while index < arguments.len() {
         match arguments[index].as_str() {
             "--custom-install" => {
-                custom_install_root =
+                options.custom_install_root =
                     Some(required_path(arguments, &mut index, "--custom-install")?)
             }
+            "--json" => options.json = true,
             unknown => return Err(format!("unknown inspect option: {unknown}")),
         }
         index += 1;
     }
-    Ok(custom_install_root)
+    Ok(options)
 }
 
 fn absolute_directory(path: &Path, label: &str) -> Result<PathBuf, Box<dyn Error>> {
@@ -417,14 +465,39 @@ fn resolve_resource_path(
     }
 }
 
+#[cfg(target_os = "macos")]
+fn macos_default_node(
+    desktop_root: Option<&Path>,
+    bundled: PathBuf,
+    npm_node: Option<OsString>,
+) -> PathBuf {
+    // Native tools authenticate the peer, parent and grandparent, including the Host.
+    let desktop_node = desktop_root
+        .map(|root| root.join("Contents/Resources/cua_node/bin/node"))
+        .filter(|node| node.is_file());
+    if let Some(desktop_node) = desktop_node {
+        desktop_node
+    } else if bundled.is_file() {
+        bundled
+    } else {
+        npm_node.map(PathBuf::from).unwrap_or(bundled)
+    }
+}
+
 impl LaunchOptions {
-    fn resolve(self) -> Result<ResolvedLaunchOptions, Box<dyn Error>> {
+    fn resolve(self, desktop_root: Option<&Path>) -> Result<ResolvedLaunchOptions, Box<dyn Error>> {
         let installed = InstalledResources::from_current_executable()?;
+        let default_node = installed.node;
+        #[cfg(target_os = "macos")]
+        let default_node =
+            macos_default_node(desktop_root, default_node, env::var_os(NPM_NODE_PATH_ENV));
+        #[cfg(not(target_os = "macos"))]
+        let _ = desktop_root;
         Ok(ResolvedLaunchOptions {
             shim: resolve_resource_path(self.shim, &installed.shim, "--shim", "bundled Shim")?,
             node: resolve_resource_path(
                 self.node,
-                &installed.node,
+                &default_node,
                 "--node",
                 "bundled Node.js runtime",
             )?,
@@ -450,10 +523,6 @@ impl LaunchOptions {
                 .pi
                 .map(|path| absolute_file(&path, "--pi"))
                 .transpose()?,
-            custom_install_root: self
-                .custom_install_root
-                .map(|path| absolute_directory(&path, "--custom-install"))
-                .transpose()?,
         })
     }
 }
@@ -465,13 +534,13 @@ fn desktop_controller_command(
 ) -> Command {
     let mut command = Command::new(&options.node);
     command
+        // Keep proxy support without surfacing its experimental API notice.
+        .arg("--disable-warning=UNDICI-EHPA")
         .arg(node_entrypoint_path(&options.desktop_controller))
         .arg("--renderer-cdp-endpoint")
         .arg(&control.renderer_cdp_endpoint)
         .arg("--renderer")
         .arg(&options.renderer_extension)
-        .arg("--default-agent")
-        .arg("codex")
         .arg("--attachment-port")
         .arg(control.attachment_port.to_string())
         .arg("--attachment-nonce")
@@ -481,6 +550,7 @@ fn desktop_controller_command(
             name.to_str(),
             Some(
                 "CODEXHOST_STARTUP_TRACE"
+                    | "CODEXHOST_DATA_DIR"
                     | "HTTP_PROXY"
                     | "http_proxy"
                     | "HTTPS_PROXY"
@@ -821,8 +891,12 @@ fn supervise_desktop(
     };
     startup_trace("runtime descriptor published");
     notify_ready_and_detach()?;
+    let mut started_update_request = None;
     loop {
-        if should_stop_desktop_for_update(false) {
+        if let Err(error) = start_pending_update(&mut started_update_request) {
+            eprintln!("codexhost launcher: pending update could not be started: {error}");
+        }
+        if should_stop_desktop_for_update(started_update_request.is_some()) {
             if let Err(error) = stop_managed_desktop_for_update(&mut desktop, &mut controller) {
                 eprintln!(
                     "codexhost launcher: managed Desktop could not be stopped for update: {error}"
@@ -875,7 +949,6 @@ fn desktop_environment(
             OsString::from(HOST_RUNTIME_PATH_ENV),
             options.host_runtime.as_os_str().to_owned(),
         ),
-        (OsString::from(DEFAULT_AGENT_ENV), OsString::from("codex")),
         (
             OsString::from(LAUNCHER_PID_ENV),
             OsString::from(std::process::id().to_string()),
@@ -909,9 +982,45 @@ fn desktop_environment(
     if env::var_os(STARTUP_TRACE_ENV).as_deref() == Some(std::ffi::OsStr::new("1")) {
         environment.push((OsString::from(STARTUP_TRACE_ENV), OsString::from("1")));
     }
+    // LaunchServices and AppX do not inherit the source launch version.
+    // Runtime metadata readers validate it and use it only for source launches.
+    if let Some(version) = env::var_os("CODEXHOST_DEV_VERSION") {
+        environment.push((OsString::from("CODEXHOST_DEV_VERSION"), version));
+    }
     environment.extend(npm_update_runtime_environment(env::vars_os()));
     environment.extend(desktop_path_overrides::forwarded(env::vars_os()));
+    #[cfg(target_os = "linux")]
+    environment.extend(linux_wayland_runtime_environment(env::vars_os()));
+    #[cfg(target_os = "windows")]
+    for name in ["PATH", "PATHEXT"] {
+        if let Some(value) = env::var_os(name) {
+            environment.push((OsString::from(name), value));
+        }
+    }
     environment
+}
+
+#[cfg(target_os = "linux")]
+const LINUX_WAYLAND_FORWARD_ENV: [&str; 3] = [
+    "WAYLAND_DISPLAY",
+    "XDG_SESSION_TYPE",
+    "CODEXHOST_DISABLE_WAYLAND",
+];
+
+#[cfg(target_os = "linux")]
+fn linux_wayland_runtime_environment(
+    variables: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Vec<(OsString, OsString)> {
+    let variables = variables.into_iter().collect::<Vec<_>>();
+    LINUX_WAYLAND_FORWARD_ENV
+        .iter()
+        .filter_map(|name| {
+            variables.iter().find_map(|(candidate, value)| {
+                (candidate == name && !value.is_empty())
+                    .then(|| (OsString::from(*name), value.clone()))
+            })
+        })
+        .collect()
 }
 
 /// Forward absolute npm update paths. AppX and LaunchServices do not inherit
@@ -984,9 +1093,22 @@ fn launch(
     _interactive_running_desktop: bool,
 ) -> Result<(), Box<dyn Error>> {
     startup_trace("launch requested");
-    let options = options.resolve()?;
+    start_launch_console(&options);
+    let installation = discover_desktop(options.custom_install_root.as_deref());
+    // 优先报告安装资源缺失，避免 Desktop 探测错误遮住损坏的 Host 安装。
+    let options = options.resolve(
+        installation
+            .as_ref()
+            .ok()
+            .map(|desktop| desktop.install_root.as_path()),
+    )?;
+    let installation = installation?;
     startup_trace("resources resolved");
-    let installation = discover_desktop(options.custom_install_root.as_deref())?;
+    startup_record::desktop(
+        &installation.version,
+        &installation.build,
+        &installation.install_root,
+    );
     startup_trace("Codex Desktop installation discovered");
     startup_trace("acquiring Launcher ownership");
     let _launcher_guard = match acquire_launcher_ownership(&installation, Duration::from_secs(120))?
@@ -997,6 +1119,8 @@ fn launch(
         }
         LauncherOwnership::Attached => {
             startup_trace("attached to existing controlled Desktop");
+            startup_record::finish(StartupOutcome::Attached, None);
+            console::show_for_launch(None);
             return Ok(());
         }
     };
@@ -1077,10 +1201,10 @@ fn launch(
                 env::var_os(REMOTE_SSH_MANAGED_ENV),
             ),
         );
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         let environment = {
             let mut environment = environment;
-            environment.extend(launcher_proxy_environment());
+            environment.extend(codexhost_platform::proxy_environment());
             environment
         };
         let result = supervise_desktop(
@@ -1113,9 +1237,22 @@ fn launch(
     _interactive_running_desktop: bool,
 ) -> Result<(), Box<dyn Error>> {
     startup_trace("launch requested");
-    let options = options.resolve()?;
+    start_launch_console(&options);
+    let installation = discover_desktop(options.custom_install_root.as_deref());
+    // 优先报告安装资源缺失，避免 Desktop 探测错误遮住损坏的 Host 安装。
+    let options = options.resolve(
+        installation
+            .as_ref()
+            .ok()
+            .map(|desktop| desktop.install_root.as_path()),
+    )?;
+    let installation = installation?;
     startup_trace("resources resolved");
-    let installation = discover_desktop(options.custom_install_root.as_deref())?;
+    startup_record::desktop(
+        &installation.version,
+        &installation.build,
+        &installation.install_root,
+    );
     startup_trace("Codex Desktop installation discovered");
     startup_trace("acquiring Launcher ownership");
     let _launcher_guard = match acquire_launcher_ownership(&installation, Duration::from_secs(120))?
@@ -1126,6 +1263,8 @@ fn launch(
         }
         LauncherOwnership::Attached => {
             startup_trace("attached to existing controlled Desktop");
+            startup_record::finish(StartupOutcome::Attached, None);
+            console::show_for_launch(None);
             return Ok(());
         }
     };
@@ -1184,6 +1323,52 @@ fn launch(
     )
 }
 
+fn start_launch_console(options: &LaunchOptions) {
+    // Recovery needs only Node and the console entrypoint, not a complete
+    // Desktop resource set. Resolve those paths before validating the rest.
+    if let Ok(installed) = InstalledResources::from_current_executable() {
+        #[cfg(target_os = "macos")]
+        let default_node = macos_default_node(None, installed.node, env::var_os(NPM_NODE_PATH_ENV));
+        #[cfg(not(target_os = "macos"))]
+        let default_node = installed.node;
+        console::start_for_launch(console::console_command_for(
+            options.node.as_deref().unwrap_or(&default_node),
+            options
+                .host_runtime
+                .as_deref()
+                .unwrap_or(&installed.host_runtime),
+            &installed.console_server,
+        ));
+    }
+}
+
+fn run_console_command(action: &str) -> Result<(), Box<dyn Error>> {
+    let installed = InstalledResources::from_current_executable()?;
+    if !installed.console_server.is_file() {
+        return Err(format!(
+            "bundled console is missing: {}",
+            installed.console_server.display()
+        )
+        .into());
+    }
+    let command = console::ConsoleCommand {
+        node: installed.node,
+        console_server: installed.console_server,
+    };
+    if console::run(&command, action)? {
+        Ok(())
+    } else {
+        Err(format!("codexhost {action} failed").into())
+    }
+}
+
+fn is_launch_command(arguments: &[String]) -> bool {
+    matches!(
+        arguments.first().map(String::as_str),
+        None | Some(START_MENU_ARGUMENT) | Some("launch")
+    )
+}
+
 fn default_launch_options() -> LaunchOptions {
     LaunchOptions {
         shim: None,
@@ -1203,13 +1388,28 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             resume_packaged_application(&arguments[1..]).map_err(Into::into)
         }
         None => launch(default_launch_options(), false),
+        Some("--help" | "-h" | "help") => {
+            println!("{USAGE}");
+            Ok(())
+        }
+        // Matches the npm wrapper, which prints its plain package version.
+        Some("--version" | "-V" | "-v") if arguments.len() == 1 => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         Some(START_MENU_ARGUMENT) if arguments.len() == 1 => launch(default_launch_options(), true),
         Some("inspect") => {
-            let custom_install_root = parse_inspect_options(&arguments[1..])?
+            let options = parse_inspect_options(&arguments[1..])?;
+            let custom_install_root = options
+                .custom_install_root
                 .map(|path| absolute_directory(&path, "--custom-install"))
                 .transpose()?;
-            inspect(custom_install_root.as_deref())
+            inspect(custom_install_root.as_deref(), options.json)
         }
+        Some("console") if arguments.len() == 1 => run_console_command("open"),
+        Some("update") if arguments.len() == 1 => run_console_command("update"),
+        Some("update") => Err("update accepts no arguments".into()),
+        Some("console") => Err("console accepts no arguments".into()),
         Some("launch") => launch(parse_launch_options(&arguments[1..])?, false),
         Some("open-loopback-url") if arguments.len() == 1 => {
             let url = read_bounded_loopback_url(std::io::stdin().lock())?;
@@ -1238,15 +1438,30 @@ fn main() -> ExitCode {
     if start_menu_launch || appx_resume {
         hide_console_window();
     }
+    let launching = is_launch_command(&arguments);
+    if launching {
+        startup_record::begin();
+        console::set_presentation(if arguments.first().map(String::as_str) == Some("launch") {
+            console::Presentation::Print
+        } else {
+            console::Presentation::Browser
+        });
+    }
     match run(&arguments) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             let message = format!("codexhost launcher: {error}");
             eprintln!("{message}");
+            let console_opened = launching && {
+                startup_record::finish(StartupOutcome::Failed, Some(&error.to_string()));
+                console::show_for_launch(Some("startup-failure"))
+            };
             #[cfg(target_os = "windows")]
-            if start_menu_launch {
+            if start_menu_launch && !console_opened {
                 show_error_dialog(&message);
             }
+            #[cfg(not(target_os = "windows"))]
+            let _ = console_opened;
             ExitCode::FAILURE
         }
     }
@@ -1276,6 +1491,8 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     use super::PI_COMMAND_ENV;
+    #[cfg(target_os = "linux")]
+    use super::linux_wayland_runtime_environment;
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     use super::stop_desktop_controller;
     #[cfg(target_os = "macos")]
@@ -1283,11 +1500,11 @@ mod tests {
     #[cfg(target_os = "windows")]
     use super::wait_for_desktop_exit;
     use super::{
-        CONTROL_NONCE_ENV, CONTROL_PORT_ENV, DEFAULT_AGENT_ENV, HOST_NODE_PATH_ENV,
-        LAUNCHER_EXECUTABLE_ENV, LAUNCHER_PID_ENV, NPM_CLI_PATH_ENV, NPM_LAUNCHER_PATH_ENV,
-        NPM_NODE_PATH_ENV, NPM_PACKAGE_ROOT_ENV, RUNTIME_DESCRIPTOR_PATH_ENV,
-        ResolvedLaunchOptions, RuntimeControl, STARTUP_TRACE_ENV, absolute_directory,
-        allocate_runtime_control, desktop_controller_command, desktop_environment, emit_ready_line,
+        CONTROL_NONCE_ENV, CONTROL_PORT_ENV, HOST_NODE_PATH_ENV, LAUNCHER_EXECUTABLE_ENV,
+        LAUNCHER_PID_ENV, NPM_CLI_PATH_ENV, NPM_LAUNCHER_PATH_ENV, NPM_NODE_PATH_ENV,
+        NPM_PACKAGE_ROOT_ENV, RUNTIME_DESCRIPTOR_PATH_ENV, ResolvedLaunchOptions, RuntimeControl,
+        STARTUP_TRACE_ENV, absolute_directory, allocate_runtime_control, delegation_node,
+        desktop_controller_command, desktop_environment, emit_ready_line,
         managed_desktop_data_directory, npm_update_runtime_environment, parse_inspect_options,
         parse_launch_options, read_bounded_controller_line, read_bounded_loopback_url,
         validate_loopback_root_url,
@@ -1427,6 +1644,60 @@ mod tests {
         assert!(options.renderer_extension.is_none());
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_host_uses_the_selected_desktop_node_and_preserves_explicit_overrides() {
+        let executable = std::env::current_exe().unwrap().canonicalize().unwrap();
+        let root =
+            std::env::temp_dir().join(format!("codexhost-signed-node-{}", std::process::id()));
+        let desktop_node = root.join("Contents/Resources/cua_node/bin/node");
+        std::fs::create_dir_all(desktop_node.parent().unwrap()).unwrap();
+        std::fs::write(&desktop_node, b"Desktop Node fixture").unwrap();
+
+        for node in [None, Some(executable.clone())] {
+            let expected = node.clone().unwrap_or_else(|| desktop_node.clone());
+            let options = super::LaunchOptions {
+                shim: Some(executable.clone()),
+                node,
+                host_runtime: Some(executable.clone()),
+                desktop_controller: Some(executable.clone()),
+                renderer_extension: Some(executable.clone()),
+                pi: None,
+                custom_install_root: None,
+            };
+            let resolved = options.resolve(Some(&root)).unwrap();
+            assert_eq!(resolved.node, expected.canonicalize().unwrap());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_node_fallback_preserves_bundled_and_npm_runtimes() {
+        let executable = std::env::current_exe().unwrap().canonicalize().unwrap();
+        let missing = executable.with_file_name("missing-desktop-node");
+        assert_eq!(
+            super::macos_default_node(
+                Some(&missing),
+                executable.clone(),
+                Some(missing.clone().into())
+            ),
+            executable
+        );
+        assert_eq!(
+            super::macos_default_node(
+                Some(&missing),
+                missing.clone(),
+                Some(executable.clone().into())
+            ),
+            executable
+        );
+        assert_eq!(
+            super::macos_default_node(Some(&missing), missing.clone(), None),
+            missing
+        );
+    }
+
     #[test]
     fn explicit_development_paths_remain_supported() {
         let options = parse_launch_options(&[
@@ -1463,10 +1734,19 @@ mod tests {
         assert_eq!(
             parse_inspect_options(&["--custom-install".into(), "/opt/CodexPortable".into()])
                 .expect("inspect accepts a custom install root")
+                .custom_install_root
                 .as_deref(),
             Some(Path::new("/opt/CodexPortable"))
         );
-        assert_eq!(parse_inspect_options(&[]).expect("bare inspect"), None);
+        assert_eq!(
+            parse_inspect_options(&[]).expect("bare inspect"),
+            super::InspectOptions::default()
+        );
+        assert!(
+            parse_inspect_options(&["--json".into()])
+                .expect("inspect accepts --json")
+                .json
+        );
     }
 
     #[test]
@@ -1502,7 +1782,6 @@ mod tests {
             desktop_controller: PathBuf::from("/opt/desktop-controller.mjs"),
             renderer_extension: PathBuf::from("/opt/renderer-extension.js"),
             pi: None,
-            custom_install_root: None,
         }
     }
 
@@ -1526,13 +1805,12 @@ mod tests {
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
             [
+                "--disable-warning=UNDICI-EHPA",
                 "/opt/desktop-controller.mjs",
                 "--renderer-cdp-endpoint",
                 "http://127.0.0.1:43123",
                 "--renderer",
                 "/opt/renderer-extension.js",
-                "--default-agent",
-                "codex",
                 "--attachment-port",
                 "43124",
                 "--attachment-nonce",
@@ -1575,7 +1853,6 @@ mod tests {
                 .find(|(candidate, _)| candidate == name)
                 .map(|(_, value)| value)
         };
-        assert_eq!(value(DEFAULT_AGENT_ENV), Some(&OsString::from("codex")));
         assert_eq!(
             value(LAUNCHER_PID_ENV),
             Some(&OsString::from(std::process::id().to_string()))
@@ -1598,6 +1875,30 @@ mod tests {
             value(CONTROL_NONCE_ENV),
             Some(&OsString::from(&control.nonce))
         );
+    }
+
+    #[test]
+    fn delegation_node_falls_back_to_the_host_node_only_without_a_bundled_node() {
+        let bundled = std::env::current_exe().expect("resolve test executable");
+        let missing = bundled.with_file_name("missing-bundled-node");
+        let host_node = missing.with_file_name("host-node");
+
+        assert_eq!(
+            delegation_node(&bundled, Some(host_node.clone().into_os_string())),
+            Ok(bundled.clone())
+        );
+        assert_eq!(
+            delegation_node(&missing, Some(host_node.clone().into_os_string())),
+            Ok(host_node)
+        );
+        assert_eq!(
+            delegation_node(Path::new("node"), None),
+            Ok(PathBuf::from("node"))
+        );
+        let error = delegation_node(&missing, Some(OsString::from("node")))
+            .expect_err("a relative Host Node is rejected");
+        assert!(error.contains("CODEXHOST_CLI_NODE_PATH"), "{error}");
+        assert!(delegation_node(&missing, None).is_err());
     }
 
     #[test]
@@ -1663,6 +1964,29 @@ mod tests {
         )));
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn desktop_environment_forwards_windows_command_search_variables() {
+        let environment = desktop_environment(
+            &resolved_options(),
+            &runtime_control(),
+            Path::new(r"C:\\codexhost.exe"),
+            Path::new(r"C:\\runtime\\desktop-runtime-v1.json"),
+            None,
+        );
+
+        for name in ["PATH", "PATHEXT"] {
+            assert_eq!(
+                environment
+                    .iter()
+                    .find(|(candidate, _)| candidate == name)
+                    .map(|(_, value)| value),
+                std::env::var_os(name).as_ref(),
+                "{name} must reach the AppX-launched Host Runtime"
+            );
+        }
+    }
+
     #[test]
     fn desktop_environment_preserves_explicit_native_home_and_profile() {
         const MARKER: &str = "CODEXHOST_TEST_DESKTOP_PATH_OVERRIDES";
@@ -1679,6 +2003,7 @@ mod tests {
                 .env("ZDOTDIR", root.join("shell"))
                 .env("CODEX_HOME", root.join("codex"))
                 .env("CODEX_ELECTRON_USER_DATA_PATH", root.join("electron"))
+                .env("CODEXHOST_DEV_VERSION", "0.12.0")
                 .env("OPENAI_API_KEY", "synthetic-not-forwarded")
                 .env_remove(super::REMOTE_SSH_MANAGED_ENV)
                 .output()
@@ -1703,6 +2028,7 @@ mod tests {
             "ZDOTDIR",
             "CODEX_HOME",
             "CODEX_ELECTRON_USER_DATA_PATH",
+            "CODEXHOST_DEV_VERSION",
         ] {
             assert!(
                 environment.contains(&(
@@ -1713,6 +2039,41 @@ mod tests {
             );
         }
         assert!(!environment.iter().any(|(name, _)| name == "OPENAI_API_KEY"));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_wayland_runtime_environment_filters_active_wayland_variables() {
+        let variables = [
+            (
+                OsString::from("WAYLAND_DISPLAY"),
+                OsString::from("wayland-0"),
+            ),
+            (
+                OsString::from("XDG_SESSION_TYPE"),
+                OsString::from("wayland"),
+            ),
+            (
+                OsString::from("CODEXHOST_DISABLE_WAYLAND"),
+                OsString::from(""),
+            ),
+            (OsString::from("DISPLAY"), OsString::from(":0")),
+            (OsString::from("SOME_SECRET"), OsString::from("secret")),
+        ];
+        let forwarded = linux_wayland_runtime_environment(variables);
+        assert_eq!(
+            forwarded,
+            [
+                (
+                    OsString::from("WAYLAND_DISPLAY"),
+                    OsString::from("wayland-0"),
+                ),
+                (
+                    OsString::from("XDG_SESSION_TYPE"),
+                    OsString::from("wayland"),
+                ),
+            ]
+        );
     }
 
     #[test]
@@ -1834,7 +2195,7 @@ mod tests {
         let command = desktop_controller_command(&options, &runtime_control(), &[]);
 
         assert_eq!(
-            command.get_args().next(),
+            command.get_args().nth(1),
             Some(OsStr::new(r"C:\Program Files\codexhost\controller.mjs")),
         );
     }

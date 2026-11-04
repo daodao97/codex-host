@@ -4,6 +4,8 @@ import { pathToFileURL } from "node:url";
 
 import {
   NPM_PACKAGE_DESCRIPTION,
+  NPM_NODE_ENGINE,
+  NPM_NODE_REQUIREMENT,
   NPM_PACKAGE_NAME,
   NPM_PLATFORM_PACKAGE_NAMES,
   createNpmBinLauncherSource,
@@ -25,7 +27,7 @@ export function createNpmMetaPackageManifest({ version }) {
     type: "module",
     bin: { codexhost: "bin/codexhost.js" },
     files: ["bin/**", "README.md"],
-    engines: { node: ">=22" },
+    engines: { node: NPM_NODE_ENGINE },
     optionalDependencies: Object.fromEntries(
       Object.values(NPM_PLATFORM_PACKAGE_NAMES).map((packageName) => [packageName, version]),
     ),
@@ -51,7 +53,7 @@ ${NPM_PACKAGE_DESCRIPTION}
 npm install -g ${NPM_PACKAGE_NAME}@${version}
 \`\`\`
 
-npm automatically installs the matching macOS, Windows, or Linux platform package. Node.js 22 or 24 and the official ChatGPT/Codex Desktop are required.
+npm automatically installs the matching macOS, Windows, or Linux platform package. ${NPM_NODE_REQUIREMENT} and the official ChatGPT/Codex Desktop are required.
 
 ## Usage
 
@@ -67,6 +69,8 @@ The \`codexhost\` command starts Codex Desktop. On macOS and Linux it returns im
 On macOS, \`remote install\` installs a current-user Aqua Harness broker so Background SSH Hosts can use native Claude Code login without reading, copying, or unlocking Keychain credentials.
 
 If installation used \`--omit=optional\`, reinstall without that option so npm can select the native package for the current architecture.
+
+If startup reports a platform package version mismatch, close Codex Desktop and run the exact reinstall command in the error. This installs both the CLI and its platform package at the same version, replacing stale independently installed payloads. \`codexhost --version\` reports the CLI package version; startup also validates the platform payload before launching it.
 `;
 }
 

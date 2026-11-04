@@ -9,10 +9,14 @@ import {
 
 export type ModernApprovalOutcome = "allowed-once" | "rejected" | "cancelled" | "unavailable";
 
+/** Locale → copy map from DSH sandbox escalation / auto-review approvals. */
+export type ModernApprovalDisplayReason = Readonly<Record<string, string>>;
+
 export interface ModernApprovalRequest {
   readonly toolName: string;
   readonly callId?: string;
   readonly reason?: string;
+  readonly displayReason?: ModernApprovalDisplayReason;
 }
 
 export interface ModernQuestionOption {
@@ -23,6 +27,7 @@ export interface ModernQuestionOption {
 export interface ModernQuestionIntent {
   readonly kind: "plan-review";
   readonly approve: string;
+  readonly callId?: string;
 }
 
 export interface ModernQuestionItem {
@@ -35,8 +40,15 @@ export interface ModernQuestionItem {
   readonly intent?: ModernQuestionIntent;
 }
 
+/** DSH 0.2.0-rc.2 keys a tool call's question; `timed` marks a wait DSH itself may release. */
+export interface ModernQuestionWait {
+  readonly callId: string;
+  readonly timed?: boolean;
+}
+
 export interface ModernQuestionRequest {
   readonly questions: readonly ModernQuestionItem[];
+  readonly wait?: ModernQuestionWait;
 }
 
 export interface ModernQuestionAnswerItem {
@@ -967,10 +979,11 @@ function attachedKnownInvocation(
 
 function parseApprovalRequest(value: Readonly<Record<string, unknown>>): ModernApprovalRequest {
   if (
-    !hasOnlyKeys(value, ["toolName"], ["callId", "reason"]) ||
+    !hasOnlyKeys(value, ["toolName"], ["callId", "reason", "displayReason"]) ||
     !nonBlankString(value.toolName) ||
     (Object.hasOwn(value, "callId") && !nonBlankString(value.callId)) ||
-    (Object.hasOwn(value, "reason") && !boundedString(value.reason))
+    (Object.hasOwn(value, "reason") && !boundedString(value.reason)) ||
+    (Object.hasOwn(value, "displayReason") && !isApprovalDisplayReason(value.displayReason))
   ) {
     throw invalidFrame();
   }
@@ -978,18 +991,46 @@ function parseApprovalRequest(value: Readonly<Record<string, unknown>>): ModernA
     toolName: value.toolName,
     ...(typeof value.callId === "string" ? { callId: value.callId } : {}),
     ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
+    ...(Object.hasOwn(value, "displayReason")
+      ? { displayReason: value.displayReason as ModernApprovalDisplayReason }
+      : {}),
   };
 }
 
+function isApprovalDisplayReason(value: unknown): value is ModernApprovalDisplayReason {
+  if (!isPlainRecord(value)) return false;
+  const entries = Object.entries(value);
+  if (entries.length === 0) return false;
+  return entries.every(
+    ([locale, text]) => locale.length > 0 && nonBlankString(text) && boundedString(text),
+  );
+}
+
 function parseQuestionRequest(value: Readonly<Record<string, unknown>>): ModernQuestionRequest {
-  if (!hasExactKeys(value, ["questions"]) || !Array.isArray(value.questions)) {
+  if (!hasOnlyKeys(value, ["questions"], ["wait"]) || !Array.isArray(value.questions)) {
     throw invalidFrame();
   }
   assertCollection(value.questions);
   if (value.questions.length === 0) throw invalidFrame();
   const questions = value.questions.map(parseQuestionItem);
   if (new Set(questions.map(({ id }) => id)).size !== questions.length) throw invalidFrame();
-  return { questions };
+  const wait = Object.hasOwn(value, "wait") ? parseQuestionWait(value.wait) : undefined;
+  return { questions, ...(wait ? { wait } : {}) };
+}
+
+function parseQuestionWait(value: unknown): ModernQuestionWait {
+  if (
+    !isPlainRecord(value) ||
+    !hasOnlyKeys(value, ["callId"], ["timed"]) ||
+    !validIdentifier(value.callId) ||
+    (Object.hasOwn(value, "timed") && typeof value.timed !== "boolean")
+  ) {
+    throw invalidFrame();
+  }
+  return {
+    callId: value.callId,
+    ...(typeof value.timed === "boolean" ? { timed: value.timed } : {}),
+  };
 }
 
 function parseQuestionItem(value: unknown): ModernQuestionItem {
@@ -1052,13 +1093,18 @@ function parseQuestionOption(value: unknown): ModernQuestionOption {
 function parseQuestionIntent(value: unknown): ModernQuestionIntent {
   if (
     !isPlainRecord(value) ||
-    !hasExactKeys(value, ["kind", "approve"]) ||
+    !hasOnlyKeys(value, ["kind", "approve"], ["callId"]) ||
     value.kind !== "plan-review" ||
-    !nonBlankString(value.approve)
+    !nonBlankString(value.approve) ||
+    (Object.hasOwn(value, "callId") && !nonBlankString(value.callId))
   ) {
     throw invalidFrame();
   }
-  return { kind: "plan-review", approve: value.approve };
+  return {
+    kind: "plan-review",
+    approve: value.approve,
+    ...(typeof value.callId === "string" ? { callId: value.callId } : {}),
+  };
 }
 
 function parseQuestionAnswer(value: unknown): ModernQuestionAnswer {

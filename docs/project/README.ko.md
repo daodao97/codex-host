@@ -12,7 +12,7 @@
 
 ⭐ 이 프로젝트가 도움이 되었다면 Star를 눌러 주세요! ⭐
 
-<p>
+<p align="center">
   <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a>
   <a href="https://openai.com/codex/"><img alt="Codex" src="../imgs/badge-codex.svg" /></a>
   <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a>
@@ -20,9 +20,11 @@
   <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a>
   <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="../imgs/badge-omp-v5.svg" /></a><br />
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek_Harness-4D6BFE?logo=deepseek&logoColor=white" /></a>
+  <a href="https://github.com/QwenLM/qwen-code"><img alt="Qwen Code" src="https://img.shields.io/badge/Qwen_Code-6950EF?logo=qwen&logoColor=white" /></a>
+  <a href="https://docs.devin.ai/cli"><img alt="Devin" src="../imgs/badge-devin.svg" /></a>
   <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="../imgs/badge-agy.svg" /></a>
   <a href="https://kiro.dev/docs/cli/"><img alt="Kiro CLI" src="../imgs/badge-kiro.svg" /></a>
-  <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="../imgs/badge-codebuddy.svg" /></a>
+  <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="../imgs/badge-codebuddy.svg" /></a><br />
   <a href="https://www.workbuddy.ai/docs/workbuddy/Quickstart"><img alt="WorkBuddy" src="../imgs/badge-workbuddy.svg" /></a>
   <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="../imgs/badge-cursor.svg" /></a>
   <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="../imgs/badge-hermes.svg" /></a>
@@ -30,11 +32,24 @@
 </p>
 <br />
 
-<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>다운로드</strong></a> · <a href="#agent-간-협업">Agent 간 협업</a> · <a href="#원격-harness">원격 연결</a> · <a href="#교류-그룹-참여">교류 그룹</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="../../README.md">English</a></p>
+<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>다운로드</strong></a> · <a href="#agent-간-협업">Agent 간 협업</a> · <a href="#원격-harness">원격 연결</a> · <a href="#교류-그룹-참여">微信交流群</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="../../README.md">English</a></p>
 
 <br />
 
 </div>
+
+## 후원
+
+<details open>
+<summary>클릭하여 접기</summary>
+
+<table>
+<tr>
+<td width="180"><a href="https://vibeapi.cc/sign-up?aff=AOYp"><img src="../imgs/sponsors/vibeapi.jpg" alt="VibeAPI" width="160"></a></td>
+<td>이 프로젝트를 후원해 주신 <b>VibeAPI</b>에 감사드립니다! VibeAPI는 AI를 집중적으로 활용하는 개발자와 팀을 위해 주요 AI 모델에 대한 통합 접근을 제공합니다. Codex와 Claude 시리즈를 중심으로, 출처를 추적할 수 있는 자체 구축 계정 풀을 운영합니다. 매우 빠른 첫 토큰 응답, 99.9% SLA 가용성, 95%+ 캐시 적중률을 제공하며, 연중무휴 24시간 전문 인력의 기술 지원과 법인 인보이스 발행 및 기업 협력을 지원합니다. <a href="https://vibeapi.cc/sign-up?aff=AOYp">사이버 혜택 받으러 가기 →</a></td>
+</tr>
+</table>
+</details>
 
 ## 인터페이스 미리보기
 
@@ -45,7 +60,7 @@ https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 ### 인터페이스
 
 <div align="center">
-  <img width="90%" src="../imgs/codexhost-interface-overview.png" alt="Codex Desktop에서 독립 Thread로 실행 중인 Pi, Claude Code, OpenCode, Oh My Pi, Grok Build, DeepSeek Harness">
+  <img width="90%" src="../imgs/codexhost-native-overview.png" alt="Codex Desktop에서 실행 중인 Claude Code, Pi, Grok Build, Oh My Pi 세션과 Diff 검토, Fork, Worktree, Agent 전환">
 </div>
 
 ## 빠른 시작
@@ -66,6 +81,10 @@ codexhost
 <details>
 <summary>설치 문제 해결</summary>
 
+**codexhost가 시작되지 않거나, Codex는 열렸지만 codexhost 기능이 보이지 않는 경우**
+
+`codexhost console`(Windows: 시작 메뉴 → "codexhost console")을 실행하면 로컬 콘솔 `http://127.0.0.1:4399/`이 열립니다. 마지막 시작 실패 원인, Codex Desktop 버전, Host Runtime 로그를 확인할 수 있고, Codex가 실행 중이 아닐 때 codexhost를 업데이트할 수 있습니다. 콘솔은 codexhost와 함께 시작됩니다. 설치 패키지로 실행하면 브라우저에서 열리고, 터미널에서 실행하면 주소가 출력됩니다.
+
 **macOS: 처음 열 때 "앱을 확인할 수 없음" 메시지가 표시됨**
 
 ```bash
@@ -84,59 +103,95 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 </details>
 
-### 상호작용 예시
+### 주요 기능
 
 <table>
   <tr>
     <td colspan="2" valign="top">
-      <p><strong>전체 작업 화면</strong></p>
+      <p><strong>전체 작업 화면</strong><br /><sub>여러 Harness의 세션이 하나의 사이드바에 모이고, 입력창 오른쪽 아래에서 언제든 Agent를 전환</sub></p>
       <div align="center">
-        <img width="90%" src="../imgs/codexhost-full-workspace.png" alt="프로젝트 구조, 대화 영역 및 여러 Agent 선택기가 표시된 Codex Desktop의 CodexHost 전체 작업 화면">
+        <img width="90%" src="../imgs/codexhost-full-workspace.png" alt="Codex Desktop에서 실행 중인 codexhost 전체 작업 화면: 프로젝트 구조, 대화 영역, 여러 Agent 선택기">
       </div>
     </td>
   </tr>
   <tr>
-    <td colspan="2" valign="top">
-      <p><strong>남은 사용량 표시</strong></p>
-      <img src="../imgs/grok-usage-limits.png" alt="5시간 및 7일 기간의 남은 한도와 초기화 시간">
+    <td width="50%" valign="top">
+      <p><strong>Diff 검토 패널</strong><br /><sub>매 턴의 변경 사항을 자동으로 요약하고, 「검토」를 누르면 오른쪽에서 전체 Diff 확인</sub></p>
+      <img src="../imgs/highlight-diff-review.png" alt="대화의 변경 요약 카드와 오른쪽 검토 패널의 Diff">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>아무 메시지에서나 Fork</strong><br /><sub>현재 작업 공간에서, 또는 새 Worktree에서 병렬 개발</sub></p>
+      <img src="../imgs/highlight-fork-worktree.png" alt="메시지에서 브랜치를 만드는 메뉴: 현재 작업 공간 또는 새 워크트리">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong># 입력으로 다른 Agent에 위임</strong><br /><sub>여러 Agent가 각자 독립 세션에서 병렬 실행 · <a href="#agent-간-협업">자세히 보기</a></sub></p>
+      <img src="../imgs/highlight-delegation.png" alt="# 입력으로 Codex, Claude Code, Grok 등 Agent를 선택하고 각 작업이 독립 세션에서 병렬 실행">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>도구 호출과 사고 과정</strong><br /><sub>모든 edit, 명령, 사고 과정을 펼쳐서 자세히 확인</sub></p>
+      <img src="../imgs/highlight-tool-details.png" alt="편집 기록을 펼쳐 새로 만든 파일의 Diff 표시">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong>Subagent 가시화</strong><br /><sub>Subagent마다 고유 아이콘이 있고, 오른쪽에서 전체 대화 확인</sub></p>
+      <img src="../imgs/highlight-subagent.png" alt="메인 대화에 4개 Subagent 상태가 표시되고 오른쪽에 그중 하나의 전체 대화">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>원격 개발</strong><br /><sub>VPS를 프로젝트로 추가하면 Agent가 원격 머신에서 바로 실행 · <a href="#원격-harness">자세히 보기</a></sub></p>
+      <img src="../imgs/highlight-remote.png" alt="사이드바의 원격 VPS 프로젝트와 원격 머신의 작업 디렉터리를 반환하는 대화">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong>사용량 한눈에 보기</strong><br /><sub>캐시 적중률, 예상 비용, 컨텍스트 사용량을 실시간 표시</sub></p>
+      <img src="../imgs/highlight-usage.png" alt="사용량 팝오버: 컨텍스트, 캐시 적중률, 캐시 읽기/쓰기, 총 Token, 예상 비용">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>계정 원클릭 가져오기</strong><br /><sub>로컬에 로그인된 Codex, Grok 자격 증명을 Pi로 바로 복사하고 한도를 실시간 확인</sub></p>
+      <img src="../imgs/highlight-account-import.png" alt="계정 설정: 5시간·7일 남은 한도와 Pi로 가져온 계정">
     </td>
   </tr>
   <tr>
     <td colspan="2" valign="top">
-      <p><strong>Mermaid 다이어그램 렌더링</strong></p>
-      <div align="center">
-        <img width="90%" src="../imgs/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop과 Pi Agent TUI의 Mermaid 다이어그램 렌더링 비교">
-      </div>
+      <p><strong>Mermaid 다이어그램 렌더링</strong><br /><sub>왼쪽: Codex Desktop + Pi는 다이어그램을 바로 렌더링, 오른쪽: Pi TUI는 소스만 표시</sub></p>
+      <img src="../imgs/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop과 Pi Agent TUI의 Mermaid 다이어그램 렌더링 비교">
     </td>
   </tr>
 </table>
 
 ## 기능 상태
 
-모든 Harness에서 Codex Desktop 네이티브 Edit Diff, Fork, 메시지 수정, 슬래시 명령을 사용할 수 있습니다.
+각 Harness는 자체 기능에 따라 Codex Desktop 네이티브 UI와 통합됩니다. 아래 매트릭스를 참고하세요.
 
 <details>
 <summary>전체 기능 매트릭스 보기</summary>
 
-| 기능 | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="../imgs/harness-icon-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="../imgs/harness-icon-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="../imgs/harness-icon-agy.svg" /></a> | <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="../imgs/harness-icon-codebuddy.svg" width="24" height="24" /></a> | <a href="https://www.workbuddy.ai/docs/workbuddy/Quickstart"><img alt="WorkBuddy" src="../../packages/adapters/workbuddy/assets/icon.svg" width="24" height="24" /></a> | <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="../imgs/harness-icon-cursor.svg" /></a> | <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="../imgs/harness-icon-hermes.svg" /></a> | <a href="https://qoder.com/cli"><img alt="Qoder" src="../../packages/adapters/qoder/assets/icon.svg" width="28" height="28" /></a> |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| 스트리밍 응답 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 도구 상태 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Edit Diff | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 질문 / 취소 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Model / Thinking 선택 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 도구 승인 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 권한 모드 | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Agent 간 작업 협업 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ |
-| Usage | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
-| Fork | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 컨텍스트 압축 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | — | ✅ | ✅ |
-| 슬래시 명령 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 이전 메시지 수정 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 기능 | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="../imgs/harness-icon-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="../imgs/harness-icon-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="../imgs/harness-icon-agy.svg" /></a> | <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="../imgs/harness-icon-codebuddy.svg" width="24" height="24" /></a> | <a href="https://www.workbuddy.ai/docs/workbuddy/Quickstart"><img alt="WorkBuddy" src="../../packages/adapters/workbuddy/assets/icon.svg" width="24" height="24" /></a> | <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="../imgs/harness-icon-cursor.svg" /></a> | <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="../imgs/harness-icon-hermes.svg" /></a> | <a href="https://qoder.com/cli"><img alt="Qoder" src="../../packages/adapters/qoder/assets/icon.svg" width="28" height="28" /></a> | <a href="https://github.com/QwenLM/qwen-code"><img alt="Qwen Code" src="../../packages/adapters/qwen-code/assets/icon.svg" width="28" height="28" /></a> | <a href="../harnesses/devin/devin-cli-acp-integration.md"><img alt="Devin" src="../../packages/adapters/devin/assets/icon.svg" width="28" height="28" /></a> |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| 스트리밍 응답 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 도구 상태 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Edit Diff | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| 질문 / 취소 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — / ✅ |
+| Model / Thinking 선택 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ / — | ✅ / ◐ |
+| 도구 승인 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 권한 모드 | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Agent 간 작업 협업 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ◐ |
+| Usage | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | — |
+| Fork | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ◐ |
+| 컨텍스트 압축 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | — | ✅ | ✅ | — | — |
+| 슬래시 명령 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
+| 이전 메시지 수정 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ◐ |
+
+Devin: ◐는 조건부 지원 또는 네이티브 검증 대기를 뜻합니다. Thinking은 네이티브 선택 옵션이 있어야 하며, Fork와 메시지 수정은 revert 확장 협상에 성공한 경우 동일한 작업 공간에서만 지원됩니다. 위임 수신은 구현되어 있지만 전체 위임 흐름은 아직 검증되지 않았습니다. Thinking과 기록 작업은 인증된 실제 CLI 검증이 필요합니다. [통합 문서](../harnesses/devin/devin-cli-acp-integration.md)를 참고하세요.
 
 </details>
 
 ## Agent 간 협업
+
+채팅 입력창에 `#`을 입력하면 작업을 위임할 Agent를 선택하거나 현재 선택한 Harness에서 사용할 수 있는 명령과 스킬을 찾을 수 있습니다.
 
 현재 Agent에게 독립 작업을 다른 Harness로 넘기도록 요청할 수 있습니다. 예를 들면 다음과 같습니다.
 
@@ -206,13 +261,15 @@ CodexHost는 다른 방식을 택합니다.
 
 </details>
 
-## 교류 그룹 참여
+<a id="교류-그룹-참여"></a>
+
+## 微信交流群
 
 <table align="center">
   <tr>
     <td>
-      <strong>교류 그룹 참여</strong><br />
-      <sub>CodexHost 사용법과 기능에 관심 있는 개발자는 QR 코드를 스캔해 위챗 그룹에 참여할 수 있습니다.</sub>
+      <strong>微信交流群</strong><br />
+      <sub>CodexHost 사용법과 기능에 관심 있는 개발자는 QR 코드를 스캔해 제 위챗을 추가해 주세요(메모: “CodexHost”). 위챗 그룹에 초대해 드립니다.</sub>
       <ul>
         <li><sub>설치 문제는 그룹에서 질문할 수 있습니다</sub></li>
         <li><sub>기능 제안과 피드백</sub></li>
@@ -222,7 +279,7 @@ CodexHost는 다른 방식을 택합니다.
       <sub><strong>함께 기여해 주세요.</strong></sub>
     </td>
     <td align="center">
-      <img width="230" alt="위챗 그룹 QR 코드" src="https://github.com/user-attachments/assets/e40b162e-a961-43ac-9728-af59890c4d72" />
+      <img width="230" alt="위챗 QR 코드" src="../imgs/wechat-contact-qrcode.jpg" />
     </td>
   </tr>
 </table>
@@ -257,6 +314,14 @@ Harness를 추가할 때는 코딩 Agent가 저장소의 [codexhost-add-harness 
 
 - 지속적인 지원을 보내 주신 [LINUX DO](https://linux.do/) 커뮤니티에 감사드립니다.
 - 멀티 Harness 통합 방식과 아키텍처에 영감을 주고 참고가 된 [Paseo](https://github.com/getpaseo/paseo) 프로젝트에 감사드립니다.
+
+## 기여자
+
+CodexHost에 기여해 주신 모든 분께 감사드립니다.
+
+<a href="https://github.com/BytePioneer-AI/codex-host/graphs/contributors">
+  <img alt="CodexHost 기여자" src="https://contrib.rocks/image?repo=BytePioneer-AI/codex-host" />
+</a>
 
 ## Star History
 

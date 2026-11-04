@@ -98,6 +98,47 @@ describe("read-only Harness accounts", () => {
     expect(inspectAccount).toHaveBeenCalledTimes(3);
   });
 
+  it.each(["old-first", "new-first"])(
+    "refreshes independently of an older flight without caching its late result (%s)",
+    async (order) => {
+      const oldRead = Promise.withResolvers<HarnessAccountSnapshot | null>();
+      const freshRead = Promise.withResolvers<HarnessAccountSnapshot | null>();
+      const freshSnapshot: HarnessAccountSnapshot = {
+        ...snapshot,
+        credits: { usedPercent: 51, periodType: "five_hour" },
+      };
+      const inspectAccount = vi
+        .fn<() => Promise<HarnessAccountSnapshot | null>>()
+        .mockReturnValueOnce(oldRead.promise)
+        .mockReturnValueOnce(freshRead.promise);
+      const native = Object.assign(adapter("pi"), { inspectAccount });
+      const cache = new HarnessAccountInspectionCache();
+
+      const old = cache.inspect(native, []);
+      expect(cache.inspect(native, [])).toBe(old);
+      await vi.waitFor(() => expect(inspectAccount).toHaveBeenCalledOnce());
+
+      const fresh = cache.inspect(native, [], true);
+      expect(fresh).not.toBe(old);
+      expect(cache.inspect(native, [])).toBe(fresh);
+      await vi.waitFor(() => expect(inspectAccount).toHaveBeenCalledTimes(2));
+
+      if (order === "old-first") {
+        oldRead.resolve(snapshot);
+        expect((await old).account).toEqual(snapshot);
+        expect(cache.inspect(native, [])).toBe(fresh);
+      }
+      freshRead.resolve(freshSnapshot);
+      expect((await fresh).account).toEqual(freshSnapshot);
+      if (order === "new-first") {
+        oldRead.resolve(snapshot);
+        expect((await old).account).toEqual(snapshot);
+      }
+      expect((await cache.inspect(native, [])).account).toEqual(freshSnapshot);
+      expect(inspectAccount).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it("does not reuse the previous account when native authentication stops returning quota", async () => {
     const inspectAccount = vi
       .fn<() => Promise<HarnessAccountSnapshot | null>>()
@@ -106,6 +147,50 @@ describe("read-only Harness accounts", () => {
     const native = Object.assign(adapter("sample-agent"), { inspectAccount });
     expect((await inspectHarnessAccounts([native], [])).accounts).toHaveLength(1);
     expect(await inspectHarnessAccounts([native], [])).toEqual({ accounts: [] });
+  });
+
+  it("keeps every Billing Source reported by one Harness", async () => {
+    const wallet = {
+      label: "qingge",
+      balance: { amount: 3, currency: "USD", label: "钱包余额" },
+    };
+    const other = {
+      label: "qingge-2",
+      balance: { amount: 1, currency: "USD", label: "钱包余额" },
+    };
+    const ready = Object.assign(adapter("pi"), {
+      inspectAccounts: async () => [wallet, other, { ...wallet, token: "must not escape" }],
+    });
+    const inspected = await inspectHarnessAccount(ready, []);
+    expect(inspected).toEqual({
+      harnessId: "pi",
+      harnessName: "pi",
+      account: wallet,
+      accounts: [wallet, other],
+    });
+    await expect(inspectHarnessAccounts([ready], [])).resolves.toEqual({
+      accounts: [
+        { ...wallet, harnessId: "pi", harnessName: "pi" },
+        { ...other, harnessId: "pi", harnessName: "pi" },
+      ],
+    });
+  });
+
+  it("prefers multi-source inspection and caps the valid snapshots at eight", async () => {
+    const inspectAccount = vi.fn(async () => snapshot);
+    const wallets = Array.from({ length: 10 }, (_, index) => ({
+      label: `wallet-${index}`,
+      balance: { amount: index, currency: "USD" },
+    }));
+    const ready = Object.assign(adapter("pi"), {
+      inspectAccount,
+      inspectAccounts: async () => [{ ...wallets[0], token: "private" }, ...wallets],
+    });
+    const inspected = await inspectHarnessAccount(ready, []);
+    expect(inspected.account).toEqual(wallets[0]);
+    expect(inspected.accounts).toEqual(wallets.slice(0, 8));
+    expect(inspectAccount).not.toHaveBeenCalled();
+    expect(listHarnessAccountSources([ready], []).sources).toHaveLength(1);
   });
 
   it("bounds unresponsive plugins and rejects malformed or secret-bearing snapshots", async () => {

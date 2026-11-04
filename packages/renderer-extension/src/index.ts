@@ -12,11 +12,7 @@ export type {
   SetCodexLocaleOverrideOptions,
 } from "./codex-locale-adapter.js";
 
-export {
-  DEFAULT_RENDERER_AGENTS,
-  DraftAgentController,
-  KNOWN_RENDERER_AGENTS,
-} from "./agent-selection-state.js";
+export { DEFAULT_RENDERER_AGENTS, DraftAgentController } from "./agent-selection-state.js";
 export type {
   ComposerAgentPhase,
   DraftAgentControllerOptions,
@@ -232,23 +228,18 @@ export type {
 export {
   SETTINGS_SHELL_ATTRIBUTE,
   installRendererSettingsShell,
-  isRendererSettingsDialogSupported,
   mountRendererSettingsShell,
 } from "./settings/shell.js";
 export type { RendererSettingsShell } from "./settings/shell.js";
 export {
-  SETTINGS_HEADER_SURFACE_SELECTOR,
   SETTINGS_TRIGGER_ATTRIBUTE,
   inspectRendererSettingsContract,
-  installRendererSettingsHeaderTrigger,
+  installRendererSettingsRailTrigger,
   mountRendererSettingsTrigger,
-  selectRendererSettingsHeaderSlot,
 } from "./settings/trigger.js";
 export type {
-  RendererSettingsBounds,
   RendererSettingsContractInspection,
-  RendererSettingsHeaderSlotCandidate,
-  RendererSettingsHeaderTriggerControl,
+  RendererSettingsRailTriggerControl,
   RendererSettingsTriggerControl,
 } from "./settings/trigger.js";
 export {

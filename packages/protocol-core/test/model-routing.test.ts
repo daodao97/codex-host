@@ -61,6 +61,32 @@ describe("external Harness transport model routing", () => {
     expect(transportModelIdForHarness("sample-agent")).toMatch(/^codexhost\/plugin-v1@/u);
   });
 
+  it("marks a prewarm create without carrying the marker into the Thread selection", () => {
+    const selection = {
+      harnessId: "sample-agent",
+      model: harnessModelRefSchema.parse({ id: "opaque-model" }),
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+    };
+    const transportModelId = encodeHarnessPluginRoute(harnessPluginRouteSchema.parse(selection));
+    const prewarmModel = encodeHarnessPluginRoute(
+      harnessPluginRouteSchema.parse({ ...selection, prewarm: true }),
+    );
+    expect(
+      decodeCreateRoute({ id: 5, method: "thread/start", params: { model: prewarmModel } }),
+    ).toEqual({
+      harnessId: "sample-agent",
+      routeMode: "native",
+      transportModelId,
+      model: selection.model,
+      thinkingOptionId: selection.thinkingOptionId,
+      prewarm: true,
+    });
+    expect(decodeExternalTransportSelection("sample-agent", prewarmModel)).toEqual({
+      model: selection.model,
+      thinkingOptionId: selection.thinkingOptionId,
+    });
+  });
+
   it.each(["pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp", "antigravity"])(
     "also accepts the shared codec for transitional identity %s",
     (harnessId) => {
@@ -98,6 +124,32 @@ describe("external Harness transport model routing", () => {
       decodeCreateRoute({ id: 3, method: "thread/start", params: { model: "official/model" } }),
     ).toEqual({ harnessId: "codex", transportModelId: "official/model" });
     expect(decodeCreateRoute({ id: 4, method: "model/list", params: {} })).toBeNull();
+  });
+
+  it.each([
+    {},
+    { model: null },
+    { model: false },
+    { model: 42 },
+    { model: [] },
+    { model: { id: "future-official-model" } },
+  ])("leaves a native Model selection unclaimed: %j", (params) => {
+    expect(decodeCreateRoute({ id: 5, method: "thread/start", params })).toBeNull();
+  });
+
+  it.each([null, [], "text", 1])("leaves native start parameters unclaimed: %j", (params) => {
+    expect(decodeCreateRoute({ id: 5, method: "thread/start", params })).toBeNull();
+    expect(decodeCreateRoute({ id: 5, method: "thread/start" })).toBeNull();
+  });
+
+  it("still rejects a malformed codexhost transport marker", () => {
+    expect(() =>
+      decodeCreateRoute({
+        id: 6,
+        method: "thread/start",
+        params: { model: `${PI_NATIVE_TRANSPORT_MODEL_ID}@` },
+      }),
+    ).toThrow();
   });
 
   it("round-trips a bounded opaque selected Pi Model Ref", () => {

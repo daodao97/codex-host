@@ -1,13 +1,14 @@
-import { HERMES_GATEWAY_COMMANDS } from "./hermes-commands.js";
-import type {
-  PermissionOption,
-  RequestPermissionResponse,
-  ToolCallContent,
-} from "@agentclientprotocol/sdk";
+import {
+  HERMES_GATEWAY_COMMANDS,
+  hermesGatewayCommandName,
+  hermesCommandsFromCompletion,
+} from "./hermes-commands.js";
+import { projectGatewayUsage } from "./hermes-usage.js";
 import type {
   HostQuestion,
   HostQuestionResponse,
   HostThreadSnapshot,
+  HostUsage,
 } from "@codexhost/harness-adapter";
 import {
   harnessThinkingOptionIdSchema,
@@ -16,12 +17,14 @@ import {
 import {
   HermesTransportError,
   type HermesOpenResult,
+  type HermesNativeCommand,
   type HermesPermissionRequest,
   type HermesPromptResponse,
   type HermesQuestionRequest,
   type HermesSessionTransport,
   type HermesTransportEvent,
-} from "./acp-transport.js";
+  type HermesToolContent,
+} from "./hermes-transport.js";
 import {
   type HermesGatewayTransport,
   gatewayRecord,
@@ -43,13 +46,15 @@ export const hermesGatewayThinkingOptions: HarnessThinkingOption[] = [
 
 type Active = {
   emit(event: HermesTransportEvent): void;
-  permission(request: HermesPermissionRequest): Promise<RequestPermissionResponse>;
+  permission(request: HermesPermissionRequest): Promise<string | null>;
   question?: (request: HermesQuestionRequest) => Promise<HostQuestionResponse>;
   resolve(value: HermesPromptResponse): void;
   reject(error: Error): void;
   streamed: string;
   reasoning: string;
   toolIds: Set<string>;
+  /** The admission this turn submitted; turn events settle only their own admission. */
+  admissionId: string | null;
 };
 
 function question(entry: GatewayRecord, fallbackId: string): HostQuestion {
@@ -72,9 +77,9 @@ function question(entry: GatewayRecord, fallbackId: string): HostQuestion {
     : { id, type: "text", prompt, multiline: true, secret: false, optional: false };
 }
 
-function gatewayDiff(text: string): ToolCallContent[] {
+function gatewayDiff(text: string): HermesToolContent[] {
   if (!text || text.length > 1024 * 1024) return [];
-  const result: ToolCallContent[] = [];
+  const result: HermesToolContent[] = [];
   let path = "";
   let inHunk = false;
   let oldLines: string[] = [],
@@ -124,21 +129,86 @@ function gatewayDiff(text: string): ToolCallContent[] {
 
 export class HermesGatewaySessionTransport implements HermesSessionTransport {
   onFault: (error: HermesTransportError) => void = () => undefined;
-  readonly availableCommands = HERMES_GATEWAY_COMMANDS;
+  #commands: readonly HermesNativeCommand[] = HERMES_GATEWAY_COMMANDS;
+  onUsage?: (usage: HostUsage) => void;
+  #knownCommands = new Set<string>();
+  rejectsCommand(text: string): boolean {
+    const name = /^\/([\w-]+)(?:\s|$)/u.exec(text.trim())?.[1]?.toLowerCase();
+    return !!name && this.#knownCommands.has(name) && !this.nativeCommandName(text);
+  }
+  get availableCommands(): readonly HermesNativeCommand[] {
+    return this.#commands;
+  }
+  async getCommands(): Promise<readonly HermesNativeCommand[]> {
+    // Canonical wire: complete.slash / commands.catalog reject a `cwd` param
+    // (their param whitelist is session-scoped), so only the session id goes.
+    const params = { session_id: this.sessionId };
+    const [response, catalog] = await Promise.all([
+      this.transport.request(
+        "complete.slash",
+        { ...params, text: "/" },
+        this.transport.timeoutMs,
+        false,
+      ),
+      this.transport.request("commands.catalog", params, this.transport.timeoutMs, false),
+    ]);
+    this.#commands = hermesCommandsFromCompletion(response.items, catalog);
+    this.#knownCommands = new Set(
+      Object.keys(gatewayRecord(catalog.commands)).map((key) =>
+        key.replace(/^\//u, "").toLowerCase(),
+      ),
+    );
+    for (const category of Array.isArray(catalog.categories) ? catalog.categories : []) {
+      const pairs = gatewayRecord(category).pairs;
+      if (Array.isArray(pairs))
+        for (const pair of pairs)
+          if (Array.isArray(pair) && typeof pair[0] === "string")
+            this.#knownCommands.add(pair[0].replace(/^\//u, "").toLowerCase());
+    }
+    return this.#commands;
+  }
+  async readUsage(): Promise<HostUsage | null> {
+    return projectGatewayUsage(
+      await this.transport.request(
+        "session.usage",
+        {
+          session_id: this.sessionId,
+        },
+        this.transport.timeoutMs,
+        false,
+      ),
+    );
+  }
   readonly history: HermesGatewayHistory;
   #active: Active | null = null;
   #requests = new Map<string, AbortController>();
+  /** Open approval server requests by their payload request_id, for approval.cancelled. */
+  #approvalRequests = new Map<string, AbortController>();
+  /** Pending approval prompts adopted from the create/resume snapshot. */
+  #adoptedPrompts: GatewayRecord[] = [];
   #closed = false;
   #info: GatewayRecord;
+  #revision: number | null = null;
+  #generation: number | null = null;
+  #subscriptionId: string | null = null;
+  /** Thread's delegation guidance, injected as api_text on the first turn only. */
+  #delegationGuidance: string | null;
   constructor(
     readonly transport: HermesGatewayTransport,
     readonly sessionId: string,
     readonly nativeSessionId: string,
     info: GatewayRecord,
+    bookkeeping: { revision?: unknown; generation?: unknown; subscriptionId?: unknown } = {},
+    delegationGuidance: string | null = null,
   ) {
     this.#info = info;
+    this.#delegationGuidance = delegationGuidance;
+    if (typeof bookkeeping.revision === "number") this.#revision = bookkeeping.revision;
+    if (typeof bookkeeping.generation === "number") this.#generation = bookkeeping.generation;
+    if (typeof bookkeeping.subscriptionId === "string")
+      this.#subscriptionId = bookkeeping.subscriptionId;
     this.history = new HermesGatewayHistory({
-      python: transport.python,
+      python: transport.runtime,
       cwd: transport.cwd,
       environment: transport.environment,
       nativeSessionId,
@@ -159,9 +229,7 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
     const provider = gatewayString(this.#info.provider);
     const currentModelId = provider ? `${provider}:${model}` : model;
     return {
-      initialize: { protocolVersion: 1 },
       sessionId: this.nativeSessionId,
-      replay: [],
       session: {
         sessionId: this.nativeSessionId,
         models: currentModelId
@@ -207,44 +275,53 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
     return optionId;
   }
   async setModel(modelId: string): Promise<void> {
-    if (/\s/u.test(modelId) || modelId.startsWith("-"))
-      throw new Error("Invalid Hermes Model identifier");
-    const result = await this.transport.request("config.set", {
-      key: "model",
-      value: modelId,
-      scope: "session",
+    // Canonical wire: a model pick is the revision-fenced `session.mutate`
+    // operation `model` — `config.set key=model` is refused with
+    // `use_session_mutation_model` on this channel. The gateway runs Hermes's
+    // own provider-aware resolution (switch_model) on the qualified id, so no
+    // helper interpreter pre-splits it.
+    const revision = this.#revision;
+    const generation = this.#generation;
+    if (revision === null || generation === null)
+      throw new Error("Hermes gateway Session revision is not known yet");
+    const result = await this.transport.request("session.mutate", {
       session_id: this.sessionId,
+      request_id: `codexhost-model-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      expected_revision: revision,
+      expected_generation: generation,
+      operation: "model",
+      payload: { model: modelId },
     });
-    if (result.confirm_required === true)
-      throw new Error(
-        gatewayString(result.confirm_message) || "Hermes requires confirmation for this Model",
-      );
-    const actualModel = gatewayString(this.#info.model);
-    const actualProvider = gatewayString(this.#info.provider);
+    if (typeof result.revision === "number") this.#revision = result.revision;
+    if (typeof result.execution_generation === "number")
+      this.#generation = result.execution_generation;
+    // Canonical wire: `config.get key="provider"` does not exist on this channel;
+    // the mutation receipt carries the committed pick.
+    const actualModel = gatewayString(result.model);
+    const actualProvider = gatewayString(result.provider);
     if (modelId !== actualModel && modelId !== `${actualProvider}:${actualModel}`)
       throw new Error("Hermes did not confirm the requested Model");
   }
   async setPermissionMode(modeId: string): Promise<void> {
     if (modeId !== "default" && modeId !== "dont_ask")
       throw new Error("Hermes gateway has no accept_edits mode");
+    // Canonical session-scoped yolo refuses `scope` (only the global variant
+    // takes it); value words are on/off and the reply is "1"/"0".
     const result = await this.transport.request("config.set", {
       key: "yolo",
       value: modeId === "dont_ask" ? "on" : "off",
-      scope: "session",
       session_id: this.sessionId,
     });
-    if (
-      result.value !== (modeId === "dont_ask" ? "1" : "0") ||
-      this.#info.yolo !== (modeId === "dont_ask")
-    )
+    if (result.value !== (modeId === "dont_ask" ? "1" : "0"))
       throw new Error(
         "Hermes effective approval policy differs from the requested mode; check native global approvals policy",
       );
+    // openResult() reports the mode from the cached session info; without this
+    // write-back a switched YOLO still shows (and persists) the old mode.
+    this.#info = { ...this.#info, yolo: modeId === "dont_ask" };
   }
   nativeCommandName(text: string): string | null {
-    const commandText = text.trim();
-    if (/^\/compress(?:\s|$)/iu.test(commandText)) return "compress";
-    return /^\/(help|tools|context|version)$/iu.exec(commandText)?.[1]?.toLowerCase() ?? null;
+    return hermesGatewayCommandName(text, this.#commands);
   }
   async runTurn(
     text: string,
@@ -269,8 +346,14 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       streamed: "",
       reasoning: "",
       toolIds: new Set(),
+      admissionId: null,
     };
     this.#active = active;
+    // Pending prompts adopted from the create/resume snapshot (an approval the
+    // gateway still waits on) can only be answered once a turn context exists.
+    void this.#adoptedPrompts
+      .splice(0)
+      .map((prompt) => void this.#respondAdoptedApproval(prompt, active).catch(() => undefined));
     const commandText = text.trim();
     const nativeCommand = this.nativeCommandName(text);
     try {
@@ -319,19 +402,40 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       } else if (nativeCommand) {
         const response = await this.transport.request("slash.exec", {
           session_id: this.sessionId,
-          command: `/${nativeCommand}`,
+          command: commandText,
         });
-        emit({ type: "agent.text", text: gatewayString(response.output) });
+        if (typeof response.output !== "string")
+          throw new HermesTransportError(
+            "protocolError",
+            "Hermes slash.exec did not return terminal command output",
+          );
+        emit({ type: "agent.text", text: response.output });
         active.resolve({ stopReason: "end_turn" });
       } else {
+        // Canonical wire: prompt.submit requires a caller-chosen submission id
+        // (idempotent retries return the same admission) and answers with an
+        // AdmissionStatus ("queued"/"started"), never "streaming".
+        // clarify_batch=true routes the clarify tool's whole question set
+        // through ONE `clarify` server request instead of one card per
+        // question; the response handler below already speaks the batch shape.
+        // The Thread's delegation guidance rides the FIRST submit's api_text
+        // (model-facing only): the gateway process never sees the bridge env,
+        // and create's skills parameter only resolves identifiers inside the
+        // gateway's own skill roots, so api_text is the one channel that
+        // actually reaches the executing agent without touching user config.
+        const guidance = this.#delegationGuidance;
+        this.#delegationGuidance = null;
         const submitted = await this.transport.request("prompt.submit", {
           session_id: this.sessionId,
           text,
+          submission_id: `codexhost-turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          clarify_batch: true,
+          ...(guidance ? { api_text: `${guidance}\n\n${text}` } : {}),
         });
-        if (submitted.status !== "streaming")
-          this.#fault(
-            new Error(`Hermes did not start an exclusive turn (${String(submitted.status)})`),
-          );
+        if (submitted.status !== "queued" && submitted.status !== "started")
+          this.#fault(new Error(`Hermes did not accept the turn (${String(submitted.status)})`));
+        else if (active.admissionId === null && typeof submitted.admission_id === "string")
+          active.admissionId = submitted.admission_id;
       }
     } catch (error) {
       active.reject(error instanceof Error ? error : new Error(String(error)));
@@ -345,7 +449,12 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
     }
   }
   async cancel(): Promise<void> {
-    await this.transport.request("session.interrupt", { session_id: this.sessionId });
+    // Canonical wire: session.interrupt is generation-fenced.
+    if (this.#generation === null) return;
+    await this.transport.request("session.interrupt", {
+      session_id: this.sessionId,
+      execution_generation: this.#generation,
+    });
   }
   async close(): Promise<void> {
     if (this.#closed) return;
@@ -354,11 +463,19 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
     this.#requests.clear();
     this.#active?.reject(new Error("Hermes gateway Session closed"));
     try {
-      await this.transport.request("session.close", { session_id: this.sessionId });
+      // Canonical wire has no session.close; the viewer detaches with the
+      // subscription id the create/resume receipt issued.
+      if (this.#subscriptionId !== null)
+        await this.transport.request("session.detach", {
+          session_id: this.sessionId,
+          subscription_id: this.#subscriptionId,
+        });
     } catch {
       /* Process close still releases ownership. */
     }
-    await this.transport.close();
+    // The bridge process itself is NOT closed here: its lifetime is owned by
+    // the adapter's warm pool (a faulted transport still closes itself in
+    // #fault), so a settled session hands a healthy bridge back for reuse.
   }
   #fault(error: unknown): void {
     if (this.#closed) return;
@@ -378,6 +495,13 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
     const payload = gatewayRecord(event.payload);
     if (event.type === "session.info") {
       this.#info = payload;
+      if (typeof payload.revision === "number") this.#revision = payload.revision;
+      if (typeof payload.execution_generation === "number")
+        this.#generation = payload.execution_generation;
+      return;
+    }
+    if (event.type === "session.usage") {
+      this.#usage(gatewayRecord(payload.usage));
       return;
     }
     if (event.type === "request.cancel") {
@@ -385,10 +509,30 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       controller?.abort(payload.reason === "timeout" ? "expired" : "cancelled");
       return;
     }
+    if (event.type === "approval.cancelled") {
+      // Interrupts/reaps drop queued gateway approvals; resolve their waits as
+      // cancelled so a permission prompt does not hang until its timeout.
+      const ids = Array.isArray(payload.request_ids)
+        ? payload.request_ids.filter((id): id is string => typeof id === "string")
+        : [];
+      for (const id of ids) {
+        this.#approvalRequests.get(id)?.abort("cancelled");
+        this.#approvalRequests.delete(id);
+      }
+      return;
+    }
     const active = this.#active;
     if (!active) {
       if (event.type === "error") this.#fault(new Error(gatewayString(payload.message)));
       return;
+    }
+    // Turn events carry the admission they belong to; a completion from the
+    // previous turn or another client's input in the SAME session must not
+    // settle this Host turn (its text would surface as the final answer).
+    const eventAdmission = gatewayString(event.admission_id);
+    const eventType = gatewayString(event.type);
+    if (eventAdmission && active.admissionId && eventAdmission !== active.admissionId) {
+      if (eventType.startsWith("message.") || eventType.startsWith("reasoning.")) return;
     }
     const text = gatewayString(payload.text);
     if (event.type === "message.delta") {
@@ -403,8 +547,11 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       if (payload.already_streamed !== true) active.emit({ type: "agent.text", text });
       active.streamed = "";
       active.reasoning = "";
-    } else if (event.type === "session.usage") this.#usage(gatewayRecord(payload.usage));
-    else if (event.type === "tool.start" || event.type === "tool.complete") {
+    } else if (event.type === "status.update") {
+      if (payload.kind === "compacting") active.emit({ type: "compaction.started", text });
+      else if (payload.kind === "compacted") active.emit({ type: "compaction.finished", text });
+      else if (payload.kind === "warning") active.emit({ type: "status.warning", text });
+    } else if (event.type === "tool.start" || event.type === "tool.complete") {
       const toolCallId = gatewayString(payload.tool_id);
       if (!toolCallId) return;
       const result = gatewayRecord(payload.result);
@@ -414,7 +561,7 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
             ? payload.result
             : JSON.stringify(payload.result)
           : gatewayString(payload.result_text) || gatewayString(payload.summary);
-      const content: ToolCallContent[] = [
+      const content: HermesToolContent[] = [
         ...(output
           ? [{ type: "content" as const, content: { type: "text" as const, text: output } }]
           : []),
@@ -425,7 +572,6 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
           type: "tool.call",
           toolCallId,
           update: {
-            sessionUpdate: "tool_call",
             toolCallId,
             title: gatewayString(payload.name),
             rawInput: payload.args,
@@ -439,7 +585,6 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
               type: "tool.call",
               toolCallId,
               update: {
-                sessionUpdate: "tool_call",
                 toolCallId,
                 title: gatewayString(payload.name),
                 rawInput: payload.args,
@@ -450,7 +595,6 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
               type: "tool.update",
               toolCallId,
               update: {
-                sessionUpdate: "tool_call_update",
                 toolCallId,
                 status:
                   result.error || result.is_error === true || result.success === false
@@ -469,6 +613,7 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       else if (reasoning.startsWith(active.reasoning) && reasoning.length > active.reasoning.length)
         active.emit({ type: "agent.thought", text: reasoning.slice(active.reasoning.length) });
       const usage = gatewayRecord(payload.usage);
+      const terminalUsage = projectGatewayUsage(usage);
       this.#usage(usage);
       if (payload.status === "error")
         active.reject(
@@ -481,22 +626,17 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       else
         active.resolve({
           stopReason: payload.status === "interrupted" ? "cancelled" : "end_turn",
-          usage: {
-            inputTokens: Number(usage.input) || 0,
-            outputTokens: Number(usage.output) || 0,
-            totalTokens: Number(usage.total) || 0,
-            ...(typeof usage.reasoning === "number" ? { thoughtTokens: usage.reasoning } : {}),
-          },
+          ...(payload.status === "complete" && text.trim() ? { finalAnswerText: text } : {}),
+          ...(terminalUsage ? { usage: terminalUsage } : {}),
         });
     } else if (event.type === "error")
       active.reject(new Error(gatewayString(payload.message) || "Hermes gateway failed"));
   }
   #usage(usage: GatewayRecord): void {
-    this.#active?.emit({
-      type: "usage",
-      ...(typeof usage.context_used === "number" ? { used: usage.context_used } : {}),
-      ...(typeof usage.context_max === "number" ? { size: usage.context_max } : {}),
-    });
+    const projected = projectGatewayUsage(usage);
+    if (!projected) return;
+    if (this.#active) this.#active.emit({ type: "usage", usage: projected });
+    else this.onUsage?.(projected);
   }
   async #request(id: string, method: string, params: GatewayRecord): Promise<void> {
     const active = this.#active;
@@ -540,42 +680,100 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
         }
       } else if (method === "approval") {
         const choices = Array.isArray(params.choices) ? params.choices : ["once", "deny"];
-        const options = choices.flatMap<PermissionOption>((choice) =>
+        const options = choices.flatMap<HermesPermissionRequest["options"][number]>((choice) =>
           choice === "once"
-            ? [{ optionId: "once", kind: "allow_once" as const, name: "Allow once" }]
+            ? [{ id: "once", effect: "allowOnce", label: "Allow once" }]
             : choice === "session" || choice === "always"
               ? [
                   {
-                    optionId: choice,
-                    kind: "allow_always" as const,
-                    name: choice === "session" ? "Allow for this session" : "Always allow",
+                    id: choice,
+                    effect: choice === "session" ? "allowForSession" : "allowAlways",
+                    label: choice === "session" ? "Allow for this session" : "Always allow",
                   },
                 ]
               : choice === "deny"
-                ? [{ optionId: "deny", kind: "reject_once" as const, name: "Deny" }]
+                ? [{ id: "deny", effect: "deny", label: "Deny" }]
                 : [],
         );
-        const response = await active.permission({
-          signal: controller.signal,
-          effects: { session: "allowForSession", always: "allowAlways" },
-          description: gatewayString(params.command) || gatewayString(params.description),
-          request: {
-            sessionId: this.nativeSessionId,
-            toolCall: {
-              toolCallId: gatewayString(params.request_id),
-              title: gatewayString(params.description) || gatewayString(params.command),
-            },
+        const payloadRequestId = gatewayString(params.request_id);
+        if (payloadRequestId) this.#approvalRequests.set(payloadRequestId, controller);
+        try {
+          const response = await active.permission({
+            signal: controller.signal,
+            title: gatewayString(params.description) || gatewayString(params.command),
+            description: gatewayString(params.command) || gatewayString(params.description),
             options,
-          },
-          options,
-        });
-        if (!controller.signal.aborted)
-          this.transport.respond(id, {
-            choice: response.outcome.outcome === "selected" ? response.outcome.optionId : "deny",
           });
+          if (!controller.signal.aborted)
+            this.transport.respond(id, {
+              choice: response ?? "deny",
+            });
+        } finally {
+          if (payloadRequestId) this.#approvalRequests.delete(payloadRequestId);
+        }
       } else this.transport.rejectRequest(id);
     } finally {
       this.#requests.delete(id);
     }
+  }
+  /** Keep approval prompts from the create/resume snapshot for the next turn. */
+  adoptPendingPrompts(prompts: unknown): void {
+    if (!Array.isArray(prompts)) return;
+    for (const entry of prompts) {
+      const prompt = gatewayRecord(entry);
+      if (gatewayString(prompt.kind) === "approval" && gatewayString(prompt.prompt_id))
+        this.#adoptedPrompts.push(prompt);
+    }
+  }
+  /**
+   * Answer a snapshot-adopted approval through canonical `approval.respond`.
+   * Clarify prompts are deliberately not answered here: a live clarify
+   * question is served by the `clarify` server request (batch mode), and the
+   * gateway re-issues still-open server requests to an attaching client.
+   */
+  async #respondAdoptedApproval(prompt: GatewayRecord, active: Active): Promise<void> {
+    if (this.#closed) return;
+    const promptId = gatewayString(prompt.prompt_id);
+    const generation = prompt.execution_generation;
+    const choices = Array.isArray(prompt.choices)
+      ? prompt.choices.filter((choice): choice is string => typeof choice === "string")
+      : ["once", "deny"];
+    const options = choices.flatMap<HermesPermissionRequest["options"][number]>((choice) =>
+      choice === "once"
+        ? [{ id: "once", effect: "allowOnce", label: "Allow once" }]
+        : choice === "session" || choice === "always"
+          ? [
+              {
+                id: choice,
+                effect: choice === "session" ? "allowForSession" : "allowAlways",
+                label: choice === "session" ? "Allow for this session" : "Always allow",
+              },
+            ]
+          : choice === "deny"
+            ? [{ id: "deny", effect: "deny", label: "Deny" }]
+            : [],
+    );
+    const response = await active.permission({
+      signal: new AbortController().signal,
+      title:
+        gatewayString(prompt.description) ||
+        gatewayString(prompt.command) ||
+        "Hermes approval requested before this Session attached",
+      description: gatewayString(prompt.command) || gatewayString(prompt.description),
+      options,
+    });
+    if (this.#closed) return;
+    if (typeof generation === "number")
+      await this.transport.request(
+        "approval.respond",
+        {
+          session_id: this.sessionId,
+          execution_generation: generation,
+          prompt_id: promptId,
+          choice: response ?? "deny",
+        },
+        this.transport.timeoutMs,
+        false,
+      );
   }
 }

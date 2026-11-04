@@ -1,4 +1,8 @@
-import type { HarnessCommandInvocation, HarnessResult } from "@codexhost/harness-adapter";
+import {
+  isExcludedLiveCommand,
+  type HarnessCommandInvocation,
+  type HarnessResult,
+} from "@codexhost/harness-adapter";
 import {
   harnessCommandCatalogSchema,
   type HarnessCommandCatalog,
@@ -58,13 +62,26 @@ export function commandCatalog(
   return {
     commands: rows(value).flatMap((entry) => {
       const name = text(entry.name).replace(/^\//u, "");
-      if (excluded.has(name) || seen.has(name)) return [];
+      const skill = record(entry._meta).type === "skill";
+      if (
+        excluded.has(name) ||
+        seen.has(name) ||
+        isExcludedLiveCommand(name, skill ? "skill" : "command")
+      )
+        return [];
       const parsed = harnessCommandCatalogSchema.safeParse({
         commands: [
           {
             id: `${profile.harnessId}.${name}`,
             invocation: `/${name}`,
             label: name,
+            ...(name === "compact" && !skill
+              ? {
+                  localizations: {
+                    "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" },
+                  },
+                }
+              : {}),
             ...(text(entry.description).trim()
               ? { description: text(entry.description).trim().slice(0, 512) }
               : {}),
@@ -72,6 +89,7 @@ export function commandCatalog(
               name === "compact" || record(entry.input).hint || record(entry._meta).type === "skill"
                 ? "text"
                 : "none",
+            ...(record(entry._meta).type === "skill" ? { kind: "skill" } : {}),
           },
         ],
       });

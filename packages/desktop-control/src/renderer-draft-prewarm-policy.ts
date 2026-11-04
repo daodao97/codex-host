@@ -2,12 +2,21 @@ import type { CdpClient } from "./cdp-client.js";
 import { committedReactAncestors } from "./renderer-react-ownership.js";
 import { retainRendererHostResponses } from "./renderer-host-response-ownership.js";
 import { createDraftPrewarmPolicyBridge } from "./renderer-draft-prewarm-runtime.js";
+import { isolateRendererPrewarmConsumption } from "./renderer-prewarm-consumption.js";
 import {
   discoverRendererHosts,
   requestManagerFromHookState,
   resolveRendererHostManager,
 } from "./renderer-host-discovery.js";
 import { installRendererHostRouting } from "./renderer-host-routing.js";
+import {
+  findRendererAppScopeStore,
+  findRendererHostRpcFamily,
+  rendererHostRpcHostIds,
+  resolveRendererHostRpc,
+} from "./renderer-host-rpc-discovery.js";
+import { installRendererHostRpcRouting } from "./renderer-host-rpc-routing.js";
+import { readRendererConnectionGeneration } from "./renderer-connection-generation.js";
 
 export { requestManagerFromHookState } from "./renderer-host-discovery.js";
 
@@ -31,15 +40,59 @@ function directRendererInstaller(): string {
     const resolveRendererHostManager = ${resolveRendererHostManager.toString()};
     const retainRendererHostResponses = ${retainRendererHostResponses.toString()};
     const createDraftPrewarmPolicyBridge = ${createDraftPrewarmPolicyBridge.toString()};
-    const routing = (${installRendererHostRouting.toString()})(
-      document, window,
-      (root) => discoverRendererHosts(root, committedReactAncestors, requestManagerFromHookState),
+    const isolateRendererPrewarmConsumption = ${isolateRendererPrewarmConsumption.toString()};
+    const findRendererAppScopeStore = ${findRendererAppScopeStore.toString()};
+    const readRendererConnectionGeneration = ${readRendererConnectionGeneration.toString()};
+    const discover = (root) =>
+      discoverRendererHosts(root, committedReactAncestors, requestManagerFromHookState);
+    const installNative = (publishRouting = true) => (${installRendererHostRouting.toString()})(
+      document, window, discover,
       (discovery, hostId) => resolveRendererHostManager(discovery, hostId, requestManagerFromHookState),
       (manager, bridge, hostId, target, prewarmed, isCurrent) => createDraftPrewarmPolicyBridge(
         manager, bridge, hostId, target, prewarmed, isCurrent, retainRendererHostResponses,
+        isolateRendererPrewarmConsumption,
       ),
+      (hostId) => readRendererConnectionGeneration(findRendererAppScopeStore(document), hostId),
+      publishRouting,
     );
-    if (!routing.forComposer()) throw new Error('Renderer request manager is ambiguous');
+    const installRpc = () => typeof MessagePort !== 'function' ? null : (${installRendererHostRpcRouting.toString()})(document, window, {
+      findStore: ${findRendererAppScopeStore.toString()},
+      findFamily: ${findRendererHostRpcFamily.toString()},
+      resolve: ${resolveRendererHostRpc.toString()},
+      hostIds: ${rendererHostRpcHostIds.toString()},
+      discoverComposer: (composer) => {
+        const source = composer?.matches?.('[data-codex-composer], [contenteditable="true"][role="textbox"]')
+          ? { querySelectorAll: () => [composer] }
+          : (composer ?? document);
+        return discover(source);
+      },
+      portPrototype: MessagePort.prototype,
+      installNativeRouting: () => installNative(false),
+      readConnection: (hostId) => readRendererConnectionGeneration(findRendererAppScopeStore(document), hostId),
+    });
+    const connected = (routing) => routing.forComposer() !== null ||
+      ['local', ...(routing.knownHostIds?.() ?? [])].some((hostId) => routing.forHost(hostId) !== null);
+    let nativeReady = false;
+    // Mixed layouts can expose native managers for only some Hosts. Keep one
+    // router that selects a native owner or the current ready RPC peer per Host.
+    const routing = (() => {
+      if (window.__codexhostHostRoutingV1) return window.__codexhostHostRoutingV1;
+      const rpc = installRpc();
+      if (rpc) return rpc;
+      const native = discover(document);
+      if (native.managers.length || native.registries.length) {
+        const routing = installNative();
+        if (connected(routing)) {
+          nativeReady = true;
+          return routing;
+        }
+        routing.dispose();
+      }
+      throw new Error('Renderer Host request manager is unavailable');
+    })();
+    // Publish a default draft policy only when its Host is unambiguous. Host
+    // connections can be ready even when multiple Composers coexist.
+    if (!nativeReady && !connected(routing)) throw new Error('Renderer Host request manager is unavailable');
     return { state: 'ready', reason: 'owned-request-bridge' };
   })()`;
 }
@@ -82,7 +135,8 @@ async function waitForDraftPrewarmPolicy(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const remaining = deadline - Date.now();
-      if (!message.includes("Renderer request manager is ambiguous") || remaining <= 0) throw error;
+      if (!message.includes("Renderer Host request manager is unavailable") || remaining <= 0)
+        throw error;
       await new Promise<void>((resolve) =>
         setTimeout(resolve, Math.min(REQUEST_MANAGER_POLL_INTERVAL_MS, remaining)),
       );
